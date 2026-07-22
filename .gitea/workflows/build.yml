@@ -21,7 +21,7 @@ jobs:
         with:
           registry: git.waterworld.com.hk
           username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITEA_TOKEN }}
+          password: ${{ secrets.REGISTRY_TOKEN }}
 
       - name: Build and push
         uses: docker/build-push-action@v5
