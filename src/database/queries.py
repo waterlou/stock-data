@@ -189,6 +189,189 @@ def log_scrape(trade_date: date, section: str, status: str, rows_inserted: int =
         """, (trade_date, section, status, rows_inserted, error_message))
 
 
+def get_stocks(search: str = "", status: str = "active", limit: int = 100, offset: int = 0) -> tuple:
+    sql = """
+        SELECT stock_code, stock_name, first_trade_date, last_trade_date, status, updated_at
+        FROM stock_master
+        WHERE (%s = '' OR stock_code ILIKE %s OR stock_name ILIKE %s)
+        AND (%s = '' OR status = %s)
+        ORDER BY stock_code
+        LIMIT %s OFFSET %s
+    """
+    search_pattern = f"%{search}%"
+    with get_cursor() as cur:
+        cur.execute(sql, (search, search_pattern, search_pattern, status, status, limit, offset))
+        rows = [dict(row) for row in cur.fetchall()]
+        cur.execute("""
+            SELECT COUNT(*) FROM stock_master
+            WHERE (%s = '' OR stock_code ILIKE %s OR stock_name ILIKE %s)
+            AND (%s = '' OR status = %s)
+        """, (search, search_pattern, search_pattern, status, status))
+        total = cur.fetchone()[0]
+    return rows, total
+
+
+def get_stock_by_code(stock_code: str) -> Optional[Dict]:
+    with get_cursor() as cur:
+        cur.execute("""
+            SELECT stock_code, stock_name, first_trade_date, last_trade_date, status, updated_at
+            FROM stock_master WHERE stock_code = %s
+        """, (stock_code,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+
+def get_quotations(stock_code: str, from_date: Optional[date] = None,
+                   to_date: Optional[date] = None, limit: int = 100, offset: int = 0) -> tuple:
+    conditions = ["stock_code = %s"]
+    params = [stock_code]
+    if from_date:
+        conditions.append("trade_date >= %s")
+        params.append(from_date)
+    if to_date:
+        conditions.append("trade_date <= %s")
+        params.append(to_date)
+    where = " AND ".join(conditions)
+    with get_cursor() as cur:
+        cur.execute(f"""
+            SELECT trade_date, stock_code, stock_name, currency, prev_close,
+                   closing, ask, bid, high, low, shares_traded, turnover
+            FROM daily_quotations
+            WHERE {where}
+            ORDER BY trade_date DESC
+            LIMIT %s OFFSET %s
+        """, (*params, limit, offset))
+        rows = [dict(row) for row in cur.fetchall()]
+        cur.execute(f"""
+            SELECT COUNT(*) FROM daily_quotations WHERE {where}
+        """, params)
+        total = cur.fetchone()[0]
+    return rows, total
+
+
+def get_adjusted_quotations(stock_code: str, from_date: Optional[date] = None,
+                            to_date: Optional[date] = None, limit: int = 100, offset: int = 0) -> tuple:
+    conditions = ["stock_code = %s"]
+    params = [stock_code]
+    if from_date:
+        conditions.append("trade_date >= %s")
+        params.append(from_date)
+    if to_date:
+        conditions.append("trade_date <= %s")
+        params.append(to_date)
+    where = " AND ".join(conditions)
+    with get_cursor() as cur:
+        cur.execute(f"""
+            SELECT trade_date, stock_code, adj_open, adj_high, adj_low, adj_close, adj_volume, adjustment_factor
+            FROM daily_quotations_adjusted
+            WHERE {where}
+            ORDER BY trade_date DESC
+            LIMIT %s OFFSET %s
+        """, (*params, limit, offset))
+        rows = [dict(row) for row in cur.fetchall()]
+        cur.execute(f"""
+            SELECT COUNT(*) FROM daily_quotations_adjusted WHERE {where}
+        """, params)
+        total = cur.fetchone()[0]
+    return rows, total
+
+
+def get_market_highlights(from_date: Optional[date] = None, to_date: Optional[date] = None,
+                          limit: int = 100, offset: int = 0) -> tuple:
+    conditions = []
+    params = []
+    if from_date:
+        conditions.append("trade_date >= %s")
+        params.append(from_date)
+    if to_date:
+        conditions.append("trade_date <= %s")
+        params.append(to_date)
+    where = " AND ".join(conditions) if conditions else "TRUE"
+    with get_cursor() as cur:
+        cur.execute(f"""
+            SELECT * FROM market_highlights
+            WHERE {where}
+            ORDER BY trade_date DESC
+            LIMIT %s OFFSET %s
+        """, (*params, limit, offset))
+        rows = [dict(row) for row in cur.fetchall()]
+        cur.execute(f"SELECT COUNT(*) FROM market_highlights WHERE {where}", params)
+        total = cur.fetchone()[0]
+    return rows, total
+
+
+def get_short_selling(stock_code: Optional[str] = None, trade_date: Optional[date] = None,
+                      limit: int = 100, offset: int = 0) -> tuple:
+    conditions = []
+    params = []
+    if stock_code:
+        conditions.append("stock_code = %s")
+        params.append(stock_code)
+    if trade_date:
+        conditions.append("trade_date = %s")
+        params.append(trade_date)
+    where = " AND ".join(conditions) if conditions else "TRUE"
+    with get_cursor() as cur:
+        cur.execute(f"""
+            SELECT trade_date, stock_code, stock_name, short_shares, short_turnover, total_shares, total_turnover
+            FROM short_selling
+            WHERE {where}
+            ORDER BY trade_date DESC, stock_code
+            LIMIT %s OFFSET %s
+        """, (*params, limit, offset))
+        rows = [dict(row) for row in cur.fetchall()]
+        cur.execute(f"SELECT COUNT(*) FROM short_selling WHERE {where}", params)
+        total = cur.fetchone()[0]
+    return rows, total
+
+
+def get_trading_dates(limit: int = 100, offset: int = 0) -> tuple:
+    with get_cursor() as cur:
+        cur.execute("""
+            SELECT DISTINCT trade_date FROM daily_quotations
+            ORDER BY trade_date DESC
+            LIMIT %s OFFSET %s
+        """, (limit, offset))
+        rows = [row[0] for row in cur.fetchall()]
+        cur.execute("SELECT COUNT(DISTINCT trade_date) FROM daily_quotations")
+        total = cur.fetchone()[0]
+    return rows, total
+
+
+def get_scrape_logs(limit: int = 50, offset: int = 0) -> tuple:
+    with get_cursor() as cur:
+        cur.execute("""
+            SELECT * FROM scrape_log
+            ORDER BY started_at DESC
+            LIMIT %s OFFSET %s
+        """, (limit, offset))
+        rows = [dict(row) for row in cur.fetchall()]
+        cur.execute("SELECT COUNT(*) FROM scrape_log")
+        total = cur.fetchone()[0]
+    return rows, total
+
+
+def get_dashboard_stats() -> Dict:
+    with get_cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM stock_master WHERE status = 'active'")
+        active_stocks = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM stock_master WHERE status = 'delisted'")
+        delisted_stocks = cur.fetchone()[0]
+        cur.execute("SELECT MAX(trade_date) FROM daily_quotations")
+        latest_date = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(DISTINCT trade_date) FROM daily_quotations")
+        trading_days = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM daily_quotations")
+        total_quotations = cur.fetchone()[0]
+    return {
+        "active_stocks": active_stocks,
+        "delisted_stocks": delisted_stocks,
+        "latest_trade_date": latest_date,
+        "trading_days": trading_days,
+        "total_quotations": total_quotations,
+    }
+
+
 def get_stock_codes_needing_corporate_actions_sync():
     with get_cursor() as cur:
         cur.execute("""

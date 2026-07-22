@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HKEX Stock Data</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bulma@1.0.2/css/bulma.min.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<style>
+  html { background: #f5f5f5; }
+  .chart-container { position: relative; height: 300px; }
+  .card { margin-bottom: 1rem; }
+  .stock-row { cursor: pointer; }
+  .stock-row:hover { background: #f0f7ff; }
+  .navbar { background: #1a1a2e; }
+  .navbar-item, .navbar-item:hover { color: #fff !important; }
+  .navbar-item.is-active { background: #16213e !important; }
+  .section { padding: 1.5rem; }
+  .price-up { color: #e74c3c; }
+  .price-down { color: #27ae60; }
+  .tab-content { display: none; }
+  .tab-content.is-active { display: block; }
+  .pagination-info { margin: 0.5rem 0; color: #666; font-size: 0.875rem; }
+  .modal-card { width: 90vw; max-height: 85vh; }
+  .modal-card-body { overflow-y: auto; }
+  @media (prefers-color-scheme: dark) {
+    html { background: #0a0a0a; }
+    .card { background: #1a1a2e; color: #e0e0e0; }
+    .table { background: #1a1a2e; color: #e0e0e0; }
+    .table th { color: #aaa; }
+    .modal-card { background: #1a1a2e; color: #e0e0e0; }
+    .modal-card-head, .modal-card-body, .modal-card-foot { background: #1a1a2e; color: #e0e0e0; }
+    .box { background: #1a1a2e; color: #e0e0e0; }
+    .input, .select select { background: #16213e; color: #e0e0e0; border-color: #333; }
+    .stock-row:hover { background: #16213e; }
+    .navbar { background: #0f0f23; }
+    .navbar-item.is-active { background: #1a1a3e !important; }
+  }
+</style>
+</head>
+<body>
+<nav class="navbar" role="navigation">
+  <div class="navbar-brand">
+    <a class="navbar-item" href="#" style="font-weight:700;font-size:1.2rem">HKEX Stock Data</a>
+  </div>
+  <div class="navbar-menu">
+    <div class="navbar-start">
+      <a class="navbar-item is-active" data-tab="dashboard" onclick="switchTab('dashboard')">Dashboard</a>
+      <a class="navbar-item" data-tab="stocks" onclick="switchTab('stocks')">Stocks</a>
+      <a class="navbar-item" data-tab="market" onclick="switchTab('market')">Market</a>
+      <a class="navbar-item" data-tab="short-selling" onclick="switchTab('short-selling')">Short Selling</a>
+      <a class="navbar-item" data-tab="logs" onclick="switchTab('logs')">Logs</a>
+    </div>
+  </div>
+</nav>
+
+<section class="section">
+  <div id="tab-dashboard" class="tab-content is-active"></div>
+  <div id="tab-stocks" class="tab-content"></div>
+  <div id="tab-market" class="tab-content"></div>
+  <div id="tab-short-selling" class="tab-content"></div>
+  <div id="tab-logs" class="tab-content"></div>
+</section>
+
+<div class="modal" id="stock-modal">
+  <div class="modal-background" onclick="closeModal()"></div>
+  <div class="modal-card">
+    <header class="modal-card-head">
+      <p class="modal-card-title" id="modal-title">Stock Detail</p>
+      <button class="delete" onclick="closeModal()"></button>
+    </header>
+    <section class="modal-card-body" id="modal-body"></section>
+  </div>
+</div>
+
+<script>
+const API = "/api";
+
+async function apiFetch(path) {
+  const r = await fetch(`${API}${path}`);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+function formatNum(v) {
+  if (v == null) return "-";
+  if (typeof v === "number") {
+    if (Math.abs(v) >= 1e8) return (v / 1e8).toFixed(2) + "B";
+    if (Math.abs(v) >= 1e4) return (v / 1e4).toFixed(2) + "M";
+    return v.toLocaleString(undefined, {maximumFractionDigits: 4});
+  }
+  return v;
+}
+
+function formatPrice(v) {
+  if (v == null) return "-";
+  return Number(v).toFixed(3);
+}
+
+function fmtPct(v) {
+  if (v == null) return "-";
+  const n = Number(v);
+  const cls = n >= 0 ? "price-up" : "price-down";
+  return `<span class="${cls}">${n >= 0 ? "+" : ""}${n.toFixed(2)}%</span>`;
+}
+
+function renderTable(headers, rows) {
+  if (!rows || rows.length === 0) return '<p class="has-text-grey">No data</p>';
+  let h = headers.map(h => `<th>${h.label}</th>`).join("");
+  let r = rows.map(row => {
+    let cells = headers.map(h => `<td>${h.fmt ? h.fmt(row[h.key]) : (row[h.key] ?? "-")}</td>`).join("");
+    return `<tr${h.klass ? ` class="${h.klass(row)}"` : ""} onclick="${h.onclick ? h.onclick(row) : ""}">${cells}</tr>`;
+  }).join("");
+  return `<div class="table-container"><table class="table is-fullwidth is-striped is-hoverable is-size-7"><thead><tr>${h}</tr></thead><tbody>${r}</tbody></table></div>`;
+}
+
+function renderPagination(total, limit, offset, onPage) {
+  if (total <= limit) return "";
+  const current = Math.floor(offset / limit) + 1;
+  const pages = Math.ceil(total / limit);
+  let html = '<nav class="pagination is-small" role="navigation"><ul class="pagination-list">';
+  if (current > 1) html += `<li><a class="pagination-link" onclick="${onPage(0)}">First</a></li>`;
+  if (current > 1) html += `<li><a class="pagination-link" onclick="${onPage(offset - limit)}">Prev</a></li>`;
+  html += `<li><span class="pagination-link is-current">${current}/${pages}</span></li>`;
+  if (current < pages) html += `<li><a class="pagination-link" onclick="${onPage(offset + limit)}">Next</a></li>`;
+  if (current < pages) html += `<li><a class="pagination-link" onclick="${onPage((pages - 1) * limit)}">Last</a></li>`;
+  html += '</ul></nav>';
+  return html + `<p class="pagination-info">Showing ${offset + 1}-${Math.min(offset + limit, total)} of ${total}</p>`;
+}
+
+function switchTab(name) {
+  document.querySelectorAll(".tab-content").forEach(t => t.classList.remove("is-active"));
+  document.querySelectorAll(".navbar-item[data-tab]").forEach(t => t.classList.remove("is-active"));
+  document.getElementById(`tab-${name}`).classList.add("is-active");
+  document.querySelector(`.navbar-item[data-tab="${name}"]`).classList.add("is-active");
+}
+
+// ---- Dashboard ----
+async function loadDashboard() {
+  const data = await apiFetch("/overview");
+  const stocks = await apiFetch("/stocks?limit=5&status=");
+  const highlights = await apiFetch("/market-highlights?limit=5");
+  const logs = await apiFetch("/scrape-logs?limit=5");
+  const dates = await apiFetch("/dates?limit=5");
+
+  const el = document.getElementById("tab-dashboard");
+  el.innerHTML = `
+    <div class="columns is-multiline">
+      <div class="column is-3"><div class="box has-text-centered"><p class="heading">Active Stocks</p><p class="title">${data.active_stocks}</p></div></div>
+      <div class="column is-3"><div class="box has-text-centered"><p class="heading">Trading Days</p><p class="title">${data.trading_days}</p></div></div>
+      <div class="column is-3"><div class="box has-text-centered"><p class="heading">Total Quotations</p><p class="title">${formatNum(data.total_quotations)}</p></div></div>
+      <div class="column is-3"><div class="box has-text-centered"><p class="heading">Latest Date</p><p class="title is-5">${data.latest_trade_date || "-"}</p></div></div>
+    </div>
+    <div class="columns">
+      <div class="column is-6">
+        <div class="card"><div class="card-header"><p class="card-header-title">Recent Trading Dates</p></div>
+        <div class="card-content">${renderTable([{label:"Date",key:"date",fmt:v=>v}], (dates.dates||[]).map(d=>({date:d})))}
+        <a class="button is-small is-ghost" onclick="switchTab('market')">View Market Highlights →</a></div></div>
+      </div>
+      <div class="column is-6">
+        <div class="card"><div class="card-header"><p class="card-header-title">Recent Scrape Logs</p></div>
+        <div class="card-content">${renderTable([{label:"Date",key:"trade_date",fmt:v=>v},{label:"Section",key:"section"},{label:"Status",key:"status"},{label:"Rows",key:"rows_inserted"}], logs.logs)}
+        <a class="button is-small is-ghost" onclick="switchTab('logs')">View All →</a></div></div>
+      </div>
+    </div>`;
+}
+
+// ---- Stocks ----
+let stockState = { search: "", status: "active", limit: 50, offset: 0 };
+
+async function loadStocks() {
+  const s = stockState;
+  const data = await apiFetch(`/stocks?search=${encodeURIComponent(s.search)}&status=${s.status}&limit=${s.limit}&offset=${s.offset}`);
+  const el = document.getElementById("tab-stocks");
+  el.innerHTML = `
+    <div class="field has-addons">
+      <div class="control is-expanded">
+        <input class="input" id="stock-search" type="text" placeholder="Search by code or name..." value="${s.search}">
+      </div>
+      <div class="control">
+        <button class="button is-info" onclick="stockState.search=document.getElementById('stock-search').value; stockState.offset=0; loadStocks()">Search</button>
+      </div>
+      <div class="control">
+        <div class="select">
+          <select onchange="stockState.status=this.value;stockState.offset=0;loadStocks()">
+            <option value="active" ${s.status==="active"?"selected":""}>Active</option>
+            <option value="delisted" ${s.status==="delisted"?"selected":""}>Delisted</option>
+            <option value="" ${s.status===""?"selected":""}>All</option>
+          </select>
+        </div>
+      </div>
+    </div>
+    ${renderPagination(data.total, s.limit, s.offset, "stockState.offset=__VAL__;loadStocks()")}
+    <div class="table-container">
+    <table class="table is-fullwidth is-striped is-hoverable is-size-7">
+      <thead><tr><th>Code</th><th>Name</th><th>Status</th><th>First Trade</th><th>Last Trade</th></tr></thead>
+      <tbody>
+        ${data.stocks.map(st => `<tr class="stock-row" onclick="openStock('${st.stock_code}')">
+          <td><strong>${st.stock_code}</strong></td>
+          <td>${st.stock_name}</td>
+          <td><span class="tag ${st.status==='active'?'is-success':'is-danger'}">${st.status}</span></td>
+          <td>${st.first_trade_date||"-"}</td>
+          <td>${st.last_trade_date||"-"}</td>
+        </tr>`).join("")}
+      </tbody>
+    </table>
+    </div>`;
+  document.getElementById("stock-search").addEventListener("keyup", e => { if (e.key === "Enter") { stockState.search = e.target.value; stockState.offset = 0; loadStocks(); }});
+}
+
+async function openStock(code) {
+  const stock = await apiFetch(`/stocks/${code}`);
+  const q = await apiFetch(`/stocks/${code}/quotations?limit=200`);
+  const adj = await apiFetch(`/stocks/${code}/adjusted?limit=200`);
+  const ca = await apiFetch(`/stocks/${code}/corporate-actions`);
+
+  document.getElementById("modal-title").textContent = `${stock.stock_code} - ${stock.stock_name}`;
+
+  let html = `
+    <div class="columns is-multiline">
+      <div class="column is-12"><div class="box">
+        <p><strong>Code:</strong> ${stock.stock_code} &nbsp; <strong>Name:</strong> ${stock.stock_name}</p>
+        <p><strong>Status:</strong> <span class="tag ${stock.status==='active'?'is-success':'is-danger'}">${stock.status}</span>
+        &nbsp; <strong>First Trade:</strong> ${stock.first_trade_date || "-"}
+        &nbsp; <strong>Last Trade:</strong> ${stock.last_trade_date || "-"}</p>
+      </div></div>`;
+
+  if (q.quotations.length > 0) {
+    html += `<div class="column is-12"><div class="chart-container"><canvas id="price-chart"></canvas></div></div>`;
+    html += `<div class="column is-12"><h5 class="title is-6">Daily Quotations (last ${q.quotations.length})</h5>
+      ${renderTable([
+        {label:"Date",key:"trade_date"},
+        {label:"Close",key:"closing",fmt:v=>formatPrice(v)},
+        {label:"High",key:"high",fmt:v=>formatPrice(v)},
+        {label:"Low",key:"low",fmt:v=>formatPrice(v)},
+        {label:"Vol",key:"shares_traded",fmt:formatNum},
+        {label:"Turnover",key:"turnover",fmt:formatNum},
+        {label:"Currency",key:"currency"},
+      ], q.quotations)}</div>`;
+  }
+
+  if (adj.adjusted.length > 0) {
+    html += `<div class="column is-12"><h5 class="title is-6">Adjusted Quotations</h5>
+      ${renderTable([
+        {label:"Date",key:"trade_date"},
+        {label:"Adj Open",key:"adj_open",fmt:v=>formatPrice(v)},
+        {label:"Adj High",key:"adj_high",fmt:v=>formatPrice(v)},
+        {label:"Adj Low",key:"adj_low",fmt:v=>formatPrice(v)},
+        {label:"Adj Close",key:"adj_close",fmt:v=>formatPrice(v)},
+        {label:"Adj Vol",key:"adj_volume",fmt:formatNum},
+        {label:"Factor",key:"adjustment_factor",fmt:v=>v?Number(v).toFixed(6):"-"},
+      ], adj.adjusted)}</div>`;
+  }
+
+  if (ca.actions.length > 0) {
+    html += `<div class="column is-12"><h5 class="title is-6">Corporate Actions</h5>
+      ${renderTable([
+        {label:"Date",key:"action_date"},
+        {label:"Type",key:"action_type",fmt:v=>`<span class="tag is-warning">${v}</span>`},
+        {label:"Split Ratio",key:"split_ratio"},
+        {label:"Dividend",key:"dividend_amount"},
+        {label:"Source",key:"source"},
+      ], ca.actions)}</div>`;
+  }
+
+  html += "</div>";
+  document.getElementById("modal-body").innerHTML = html;
+  document.getElementById("stock-modal").classList.add("is-active");
+
+  if (q.quotations.length > 0) {
+    setTimeout(() => drawPriceChart(q.quotations), 100);
+  }
+}
+
+function drawPriceChart(data) {
+  const canvas = document.getElementById("price-chart");
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  const labels = data.map(d => d.trade_date).reverse();
+  const close = data.map(d => Number(d.closing)).reverse();
+  const high = data.map(d => Number(d.high)).reverse();
+  const low = data.map(d => Number(d.low)).reverse();
+
+  new Chart(ctx, {
+    type: "line",
+    data: {
+      labels,
+      datasets: [
+        { label: "Close", data: close, borderColor: "#2563eb", backgroundColor: "rgba(37,99,235,0.1)", fill: true, tension: 0.1, pointRadius: 1 },
+        { label: "High", data: high, borderColor: "#16a34a", borderDash: [3,3], pointRadius: 0 },
+        { label: "Low", data: low, borderColor: "#dc2626", borderDash: [3,3], pointRadius: 0 },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { position: "top", labels: { boxWidth: 12, padding: 8 } } },
+      scales: { x: { ticks: { maxTicksLimit: 10, font: { size: 10 } } }, y: { ticks: { font: { size: 10 } } } },
+    },
+  });
+}
+
+function closeModal() {
+  document.getElementById("stock-modal").classList.remove("is-active");
+}
+
+// ---- Market ----
+let marketState = { limit: 50, offset: 0 };
+
+async function loadMarket() {
+  const s = marketState;
+  const data = await apiFetch(`/market-highlights?limit=${s.limit}&offset=${s.offset}`);
+  const el = document.getElementById("tab-market");
+  el.innerHTML = `
+    <h3 class="title is-5">Market Highlights</h3>
+    ${renderPagination(data.total, s.limit, s.offset, "marketState.offset=__VAL__;loadMarket()")}
+    <div class="table-container">
+    <table class="table is-fullwidth is-striped is-hoverable is-size-7">
+      <thead><tr><th>Date</th><th>HSI Close</th><th>HSI Chg%</th><th>HSCEI Close</th><th>HSCEI Chg%</th><th>Turnover</th><th>Adv</th><th>Dec</th><th>Unch</th></tr></thead>
+      <tbody>
+        ${data.highlights.map(h => `<tr>
+          <td><strong>${h.trade_date}</strong></td>
+          <td>${formatPrice(h.hsi_close)}</td>
+          <td>${fmtPct(h.hsi_change_pct)}</td>
+          <td>${formatPrice(h.hscei_close)}</td>
+          <td>${fmtPct(h.hscei_change_pct)}</td>
+          <td>${formatNum(h.turnover_hkd)}</td>
+          <td>${h.advanced ?? "-"}</td>
+          <td>${h.declined ?? "-"}</td>
+          <td>${h.unchanged ?? "-"}</td>
+        </tr>`).join("")}
+      </tbody>
+    </table>
+    </div>`;
+}
+
+// ---- Short Selling ----
+let ssState = { stock_code: "", trade_date: "", limit: 50, offset: 0 };
+
+async function loadShortSelling() {
+  const s = ssState;
+  let path = `/short-selling?limit=${s.limit}&offset=${s.offset}`;
+  if (s.stock_code) path += `&stock_code=${encodeURIComponent(s.stock_code)}`;
+  if (s.trade_date) path += `&trade_date=${s.trade_date}`;
+  const data = await apiFetch(path);
+  const el = document.getElementById("tab-short-selling");
+  el.innerHTML = `
+    <h3 class="title is-5">Short Selling</h3>
+    <div class="field has-addons">
+      <div class="control"><input class="input" id="ss-code" type="text" placeholder="Stock code..." value="${s.stock_code}"></div>
+      <div class="control"><input class="input" id="ss-date" type="date" value="${s.trade_date}"></div>
+      <div class="control"><button class="button is-info" onclick="ssState.stock_code=document.getElementById('ss-code').value;ssState.trade_date=document.getElementById('ss-date').value;ssState.offset=0;loadShortSelling()">Filter</button></div>
+      <div class="control"><button class="button is-light" onclick="ssState={stock_code:'',trade_date:'',limit:50,offset:0};loadShortSelling()">Clear</button></div>
+    </div>
+    ${renderPagination(data.total, s.limit, s.offset, "ssState.offset=__VAL__;loadShortSelling()")}
+    <div class="table-container">
+    <table class="table is-fullwidth is-striped is-hoverable is-size-7">
+      <thead><tr><th>Date</th><th>Code</th><th>Name</th><th>Short Shares</th><th>Short Turnover</th><th>Total Shares</th><th>Total Turnover</th><th>Short %</th></tr></thead>
+      <tbody>
+        ${data.entries.map(e => {
+          const pct = e.total_turnover && e.total_turnover > 0 ? ((e.short_turnover / e.total_turnover) * 100).toFixed(1) + "%" : "-";
+          return `<tr><td>${e.trade_date}</td><td><strong>${e.stock_code}</strong></td><td>${e.stock_name}</td><td>${formatNum(e.short_shares)}</td><td>${formatNum(e.short_turnover)}</td><td>${formatNum(e.total_shares)}</td><td>${formatNum(e.total_turnover)}</td><td>${pct}</td></tr>`;
+        }).join("")}
+      </tbody>
+    </table>
+    </div>`;
+}
+
+// ---- Logs ----
+let logState = { limit: 50, offset: 0 };
+
+async function loadLogs() {
+  const s = logState;
+  const data = await apiFetch(`/scrape-logs?limit=${s.limit}&offset=${s.offset}`);
+  const el = document.getElementById("tab-logs");
+  el.innerHTML = `
+    <h3 class="title is-5">Scrape Logs</h3>
+    ${renderPagination(data.total, s.limit, s.offset, "logState.offset=__VAL__;loadLogs()")}
+    <div class="table-container">
+    <table class="table is-fullwidth is-striped is-hoverable is-size-7">
+      <thead><tr><th>ID</th><th>Date</th><th>Section</th><th>Status</th><th>Rows</th><th>Error</th><th>Started</th><th>Completed</th></tr></thead>
+      <tbody>
+        ${data.logs.map(l => `<tr>
+          <td>${l.id}</td>
+          <td>${l.trade_date||"-"}</td>
+          <td>${l.section||"-"}</td>
+          <td><span class="tag ${l.status==='success'?'is-success':'is-danger'}">${l.status}</span></td>
+          <td>${l.rows_inserted ?? "-"}</td>
+          <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis">${l.error_message||"-"}</td>
+          <td class="is-size-7">${l.started_at||"-"}</td>
+          <td class="is-size-7">${l.completed_at||"-"}</td>
+        </tr>`).join("")}
+      </tbody>
+    </table>
+    </div>`;
+}
+
+// ---- Init ----
+loadDashboard();
+loadStocks();
+loadMarket();
+loadShortSelling();
+loadLogs();
+</script>
+</body>
+</html>

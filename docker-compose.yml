@@ -28,5 +28,19 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  web:
+    build: .
+    command: uvicorn src.api.server:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://hkex:hkex@postgres:5432/hkex
+      TZ: Asia/Hong_Kong
+      LOG_LEVEL: INFO
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   pgdata:
