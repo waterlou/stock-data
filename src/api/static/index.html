@@ -51,6 +51,7 @@
       <a class="navbar-item" data-tab="short" onclick="switchTab('short')">Short Selling</a>
       <a class="navbar-item" data-tab="queue" onclick="switchTab('queue')">Queue</a>
       <a class="navbar-item" data-tab="logs" onclick="switchTab('logs')">Logs</a>
+      <a class="navbar-item" data-tab="sources" onclick="switchTab('sources')">Sources</a>
     </div>
     <div class="navbar-end">
       <div class="navbar-item" id="key-nav" style="display:none">
@@ -123,6 +124,15 @@
 
   <div id="tab-queue" class="tab-content"></div>
   <div id="tab-logs" class="tab-content"></div>
+
+  <div id="tab-sources" class="tab-content">
+    <h3 class="title is-5">Data Sources</h3>
+    <div class="field"><div class="control"><div class="select"><select id="src-market" onchange="loadSources()">
+      <option value="HK">HK</option><option value="US">US</option><option value="CN">CN</option></select></div></div></div>
+    <div id="sources-priority"><p class="has-text-grey">Loading sources...</p></div>
+    <h5 class="title is-6 mt-4">Health</h5>
+    <div id="sources-health"><p class="has-text-grey">Loading health...</p></div>
+  </div>
 </section>
 
 <div class="modal" id="stock-modal">
@@ -541,6 +551,78 @@ async function loadLogs() {
     </table></div>`;
 }
 
+// ---------- Sources ----------
+async function loadSources() {
+  const market = document.getElementById("src-market").value;
+  document.getElementById("sources-priority").innerHTML = '<p class="has-text-grey">Loading sources...</p>';
+  document.getElementById("sources-health").innerHTML = '<p class="has-text-grey">Loading health...</p>';
+  try {
+    const [src, health] = await Promise.all([
+      apiFetch("/sources"), apiFetch("/sources/health"),
+    ]);
+    const order = src.sources.filter(s => s.market_code === market).sort((a, b) => a.priority - b.priority);
+    const healthMap = {};
+    (health.health || []).forEach(h => healthMap[h.source_code] = h);
+
+    document.getElementById("sources-priority").innerHTML = order.length
+      ? `<div class="table-container"><table class="table is-fullwidth is-striped is-size-7">
+          <thead><tr><th>Priority</th><th>Source</th><th>Enabled</th><th>Status</th><th></th></tr></thead>
+          <tbody>${order.map((s, i) => {
+            const h = healthMap[s.source_code] || {};
+            const statusCls = (h.consecutive_failures||0) >= 3 ? "is-danger"
+              : (h.consecutive_failures||0) > 0 ? "is-warning" : "is-success";
+            const statusTxt = (h.consecutive_failures||0) >= 3 ? "unhealthy (skipped)"
+              : (h.consecutive_failures||0) > 0 ? `${h.consecutive_failures} failures` : "healthy";
+            return `<tr>
+              <td><strong>${s.priority}</strong></td>
+              <td><code>${esc(s.source_code)}</code> <span class="is-size-7 has-text-grey">${esc(s.source_name)}</span></td>
+              <td><span class="tag ${s.enabled?"is-success":"is-light"}">${s.enabled?"on":"off"}</span></td>
+              <td><span class="tag ${statusCls}">${statusTxt}</span></td>
+              <td class="has-text-right">
+                <button class="button is-small ${i===0?"is-static":"is-light"}" ${i===0?"disabled":""} onclick="moveSource('${market}','${jsStr(s.source_code)}',-1)">▲</button>
+                <button class="button is-small ${i===order.length-1?"is-static":"is-light"}" ${i===order.length-1?"disabled":""} onclick="moveSource('${market}','${jsStr(s.source_code)}',1)">▼</button>
+                <button class="button is-small ${s.enabled?"is-warning":"is-success"}" onclick="toggleSource('${market}','${jsStr(s.source_code)}',${!s.enabled})">${s.enabled?"Disable":"Enable"}</button>
+              </td></tr>`;
+          }).join("")}</tbody></table></div>`
+      : '<p class="has-text-grey">No sources configured for this market.</p>';
+
+    document.getElementById("sources-health").innerHTML = (health.health || []).length
+      ? `<div class="table-container"><table class="table is-fullwidth is-striped is-size-7">
+          <thead><tr><th>Source</th><th>Failures</th><th>Last Success</th><th>Last Failure</th><th>Error</th></tr></thead>
+          <tbody>${health.health.map(h => `<tr>
+            <td><code>${esc(h.source_code)}</code> ${esc(h.source_name)}</td>
+            <td><span class="tag ${(h.consecutive_failures||0)>=3?"is-danger":(h.consecutive_failures||0)>0?"is-warning":"is-success"}">${h.consecutive_failures||0}</span></td>
+            <td class="is-size-7">${h.last_success_at||"-"}</td>
+            <td class="is-size-7">${h.last_failure_at||"-"}</td>
+            <td class="is-size-7" style="max-width:220px;overflow:hidden;text-overflow:ellipsis">${esc(h.last_error||"-")}</td></tr>`).join("")}</tbody>
+        </table></div>`
+      : '<p class="has-text-grey">No health data recorded yet.</p>';
+  } catch (e) {
+    document.getElementById("sources-priority").innerHTML =
+      `<p class="has-text-danger">Failed to load sources: ${esc(e.message)}</p>`;
+  }
+}
+
+async function moveSource(market, source, dir) {
+  const src = await apiFetch("/sources");
+  const order = src.sources.filter(s => s.market_code === market).sort((a, b) => a.priority - b.priority);
+  const idx = order.findIndex(s => s.source_code === source);
+  const other = order[idx + dir];
+  if (!other) return;
+  await apiFetch(`/sources/${market}/${encodeURIComponent(source)}`, { method: "PATCH",
+    headers: { "Content-Type": "application/json" }, body: JSON.stringify({ priority: other.priority }) });
+  await apiFetch(`/sources/${market}/${encodeURIComponent(other.source_code)}`, { method: "PATCH",
+    headers: { "Content-Type": "application/json" }, body: JSON.stringify({ priority: order[idx].priority }) });
+  loadSources();
+}
+
+async function toggleSource(market, source, enabled) {
+  await apiFetch(`/sources/${market}/${encodeURIComponent(source)}`, { method: "PATCH",
+    headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled }) });
+  toast(`${source} ${enabled ? "enabled" : "disabled"}`);
+  loadSources();
+}
+
 // ---------- Init ----------
 if (apiKey) document.getElementById("key-input").value = apiKey;
 checkAuth();
@@ -553,6 +635,7 @@ loadIndices();
 loadShort();
 loadQueue();
 loadLogs();
+loadSources();
 </script>
 </body>
 </html>
