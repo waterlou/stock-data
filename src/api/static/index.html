@@ -68,10 +68,59 @@
 
 <section class="section">
   <div id="tab-dashboard" class="tab-content is-active"></div>
-  <div id="tab-stocks" class="tab-content"></div>
-  <div id="tab-watchlist" class="tab-content"></div>
-  <div id="tab-indices" class="tab-content"></div>
-  <div id="tab-short" class="tab-content"></div>
+
+  <div id="tab-stocks" class="tab-content">
+    <div class="field has-addons">
+      <div class="control is-expanded"><input class="input" id="stk-search" type="text" placeholder="Search ticker or name..." value=""></div>
+      <div class="control"><button class="button is-info" onclick="searchStocks()">Search</button></div>
+      <div class="control"><div class="select"><select id="stk-market" onchange="searchStocks()">
+        <option value="">All markets</option><option value="HK">HK</option><option value="US">US</option><option value="CN">CN</option></select></div></div>
+      <div class="control"><div class="select"><select id="stk-watchlist" onchange="searchStocks()">
+        <option value="">Any watchlist</option><option value="true">Watchlist only</option></select></div></div>
+    </div>
+    <div id="stocks-pagination"></div>
+    <div id="stocks-table"><p class="has-text-grey">Loading stocks...</p></div>
+  </div>
+
+  <div id="tab-watchlist" class="tab-content">
+    <h3 class="title is-5">Watchlist</h3>
+    <div class="columns">
+      <div class="column is-6"><div class="card"><div class="card-header"><p class="card-header-title">Add / Import</p></div>
+        <div class="card-content">
+          <div class="field"><label class="label">Tickers (one per line, e.g. 0700.HK, AAPL, 00700)</label>
+          <div class="control"><textarea class="textarea" id="wl-text" rows="6" placeholder="0700.HK&#10;AAPL&#10;MSFT&#10;00700"></textarea></div></div>
+          <div class="field"><label class="label">Market (optional, default auto-detect)</label>
+          <div class="control"><div class="select"><select id="wl-market"><option value="">Auto</option><option value="HK">HK</option><option value="US">US</option><option value="CN">CN</option></select></div></div></div>
+          <div class="field is-grouped">
+            <div class="control"><button class="button is-info" onclick="addWatchlist()">Add</button></div>
+            <div class="control"><button class="button is-primary" onclick="importWatchlist()">Import</button></div>
+            <div class="control"><a class="button is-light" href="/api/watchlist/export">Export CSV</a></div>
+          </div>
+        </div></div></div>
+      <div class="column is-6"><div class="card"><div class="card-header"><p class="card-header-title">Current Watchlist</p></div>
+        <div class="card-content"><div id="watchlist-table"><p class="has-text-grey">Loading watchlist...</p></div></div></div></div>
+    </div>
+  </div>
+
+  <div id="tab-indices" class="tab-content">
+    <h3 class="title is-5">Market Indices</h3>
+    <div class="field"><div class="control"><div class="select"><select id="idx-market" onchange="searchIndices()">
+      <option value="">All</option><option value="HK">HK</option><option value="US">US</option><option value="CN">CN</option></select></div></div></div>
+    <div id="indices-pagination"></div>
+    <div id="indices-table"><p class="has-text-grey">Loading indices...</p></div>
+  </div>
+
+  <div id="tab-short" class="tab-content">
+    <h3 class="title is-5">Short Selling (HKEX)</h3>
+    <div class="field has-addons">
+      <div class="control"><input class="input" id="ss-ticker" type="text" placeholder="Ticker (e.g. 0700.HK)" value=""></div>
+      <div class="control"><input class="input" id="ss-date" type="date" value=""></div>
+      <div class="control"><button class="button is-info" onclick="searchShort()">Filter</button></div>
+    </div>
+    <div id="short-pagination"></div>
+    <div id="short-table"><p class="has-text-grey">Loading short selling...</p></div>
+  </div>
+
   <div id="tab-queue" class="tab-content"></div>
   <div id="tab-logs" class="tab-content"></div>
 </section>
@@ -239,38 +288,39 @@ async function loadDashboard() {
 // ---------- Stocks ----------
 let stockState = { search: "", market: "", watchlist: "", limit: 50, offset: 0 };
 
+function searchStocks() {
+  stockState.search = document.getElementById("stk-search").value;
+  stockState.market = document.getElementById("stk-market").value;
+  stockState.watchlist = document.getElementById("stk-watchlist").value;
+  stockState.offset = 0;
+  loadStocks();
+}
+
 async function loadStocks() {
   const s = stockState;
+  document.getElementById("stocks-table").innerHTML = '<p class="has-text-grey">Loading stocks...</p>';
   let q = `/stocks?search=${encodeURIComponent(s.search)}&limit=${s.limit}&offset=${s.offset}`;
   if (s.market) q += `&market=${s.market}`;
   if (s.watchlist !== "") q += `&watchlist=${s.watchlist}`;
-  const data = await apiFetch(q);
-  document.getElementById("tab-stocks").innerHTML = `
-    <div class="field has-addons">
-      <div class="control is-expanded"><input class="input" id="stk-search" type="text" placeholder="Search ticker or name..." value="${s.search}"></div>
-      <div class="control"><button class="button is-info" onclick="stockState.search=document.getElementById('stk-search').value;stockState.offset=0;loadStocks()">Search</button></div>
-      <div class="control"><div class="select"><select onchange="stockState.market=this.value;stockState.offset=0;loadStocks()">
-        <option value="" ${!s.market?"selected":""}>All markets</option>
-        <option value="HK" ${s.market==="HK"?"selected":""}>HK</option>
-        <option value="US" ${s.market==="US"?"selected":""}>US</option>
-        <option value="CN" ${s.market==="CN"?"selected":""}>CN</option></select></div></div>
-      <div class="control"><div class="select"><select onchange="stockState.watchlist=this.value;stockState.offset=0;loadStocks()">
-        <option value="" ${s.watchlist===""?"selected":""}>Any watchlist</option>
-        <option value="true" ${s.watchlist==="true"?"selected":""}>Watchlist only</option></select></div></div>
-    </div>
-    ${renderPagination(data.total, s.limit, s.offset, "stockState.offset=__VAL__;loadStocks()")}
-    <div class="table-container"><table class="table is-fullwidth is-striped is-hoverable is-size-7">
-      <thead><tr><th>Ticker</th><th>Name</th><th>Market</th><th>Watchlist</th><th>Status</th><th>First</th><th>Last</th></tr></thead>
-      <tbody>${data.stocks.map(st => `<tr class="stock-row" onclick="openStock('${jsStr(st.ticker)}')">
-        <td><strong>${esc(st.ticker)}</strong></td><td>${esc(st.name)}</td>
-        <td><span class="tag is-info">${st.market_code}</span></td>
-        <td>${st.watchlist ? "✓" : ""}</td>
-        <td><span class="tag ${st.status==="active"?"is-success":"is-danger"}">${st.status}</span></td>
-        <td>${st.first_date||"-"}</td><td>${st.last_date||"-"}</td></tr>`).join("")}</tbody>
-    </table></div>`;
-  document.getElementById("stk-search").addEventListener("keyup", e => {
-    if (e.key === "Enter") { stockState.search = e.target.value; stockState.offset = 0; loadStocks(); }
-  });
+  try {
+    const data = await apiFetch(q);
+    const rows = data.stocks.length ? data.stocks.map(st => `<tr class="stock-row" onclick="openStock('${jsStr(st.ticker)}')">
+      <td><strong>${esc(st.ticker)}</strong></td><td>${esc(st.name)}</td>
+      <td><span class="tag is-info">${esc(st.market_code)}</span></td>
+      <td>${st.watchlist ? "✓" : ""}</td>
+      <td><span class="tag ${st.status==="active"?"is-success":"is-danger"}">${esc(st.status)}</span></td>
+      <td>${st.first_date||"-"}</td><td>${st.last_date||"-"}</td></tr>`).join("")
+      : '<tr><td colspan="7" class="has-text-grey">No stocks yet. Add tickers in the Watchlist tab, or search for a ticker above.</td></tr>';
+    document.getElementById("stocks-table").innerHTML = `
+      <div class="table-container"><table class="table is-fullwidth is-striped is-hoverable is-size-7">
+        <thead><tr><th>Ticker</th><th>Name</th><th>Market</th><th>Watchlist</th><th>Status</th><th>First</th><th>Last</th></tr></thead>
+        <tbody>${rows}</tbody></table></div>`;
+    document.getElementById("stocks-pagination").innerHTML =
+      renderPagination(data.total, s.limit, s.offset, "stockState.offset=__VAL__;loadStocks()");
+  } catch (e) {
+    document.getElementById("stocks-table").innerHTML =
+      `<p class="has-text-danger">Failed to load stocks: ${esc(e.message)}</p>`;
+  }
 }
 
 async function openStock(ticker) {
@@ -342,30 +392,21 @@ async function loadWatchlist() {
   const s = wlState;
   let q = `/watchlist`;
   if (s.market) q += `?market=${s.market}`;
-  const data = await apiFetch(q);
-  document.getElementById("tab-watchlist").innerHTML = `
-    <h3 class="title is-5">Watchlist</h3>
-    <div class="columns">
-      <div class="column is-6"><div class="card"><div class="card-header"><p class="card-header-title">Add / Import</p></div>
-        <div class="card-content">
-          <div class="field"><label class="label">Tickers (one per line, e.g. 0700.HK, AAPL, 00700)</label>
-          <div class="control"><textarea class="textarea" id="wl-text" rows="6" placeholder="0700.HK&#10;AAPL&#10;MSFT&#10;00700"></textarea></div></div>
-          <div class="field"><label class="label">Market (optional, default auto-detect)</label>
-          <div class="control"><div class="select"><select id="wl-market"><option value="">Auto</option><option value="HK">HK</option><option value="US">US</option><option value="CN">CN</option></select></div></div></div>
-          <div class="field is-grouped">
-            <div class="control"><button class="button is-info" onclick="addWatchlist()">Add</button></div>
-            <div class="control"><button class="button is-primary" onclick="importWatchlist()">Import</button></div>
-            <div class="control"><a class="button is-light" href="/api/watchlist/export">Export CSV</a></div>
-          </div>
-        </div></div></div>
-      <div class="column is-6"><div class="card"><div class="card-header"><p class="card-header-title">Current Watchlist</p></div>
-        <div class="card-content"><div class="table-container"><table class="table is-fullwidth is-striped is-size-7">
+  document.getElementById("watchlist-table").innerHTML = '<p class="has-text-grey">Loading watchlist...</p>';
+  try {
+    const data = await apiFetch(q);
+    document.getElementById("watchlist-table").innerHTML = data.stocks.length
+      ? `<div class="table-container"><table class="table is-fullwidth is-striped is-size-7">
           <thead><tr><th>Ticker</th><th>Name</th><th>Market</th><th></th></tr></thead>
           <tbody>${data.stocks.map(st => `<tr>
             <td><strong>${esc(st.ticker)}</strong></td><td>${esc(st.name)}</td><td>${esc(st.market_code)}</td>
             <td><button class="button is-small is-danger is-outlined" onclick="removeWatch('${jsStr(st.ticker)}')">Remove</button></td></tr>`).join("")}
-          </tbody></table></div></div></div></div>
-    </div>`;
+          </tbody></table></div>`
+      : '<p class="has-text-grey">No watchlist stocks yet. Add some on the left.</p>';
+  } catch (e) {
+    document.getElementById("watchlist-table").innerHTML =
+      `<p class="has-text-danger">Failed to load watchlist: ${esc(e.message)}</p>`;
+  }
 }
 
 async function addWatchlist() {
@@ -392,45 +433,63 @@ async function removeWatch(ticker) {
 
 // ---------- Indices ----------
 let idxState = { market: "", limit: 50, offset: 0 };
+function searchIndices() {
+  idxState.market = document.getElementById("idx-market").value;
+  idxState.offset = 0;
+  loadIndices();
+}
 async function loadIndices() {
   const s = idxState;
   let q = `/indices?limit=${s.limit}&offset=${s.offset}`;
   if (s.market) q += `&market=${s.market}`;
-  const data = await apiFetch(q);
-  document.getElementById("tab-indices").innerHTML = `
-    <h3 class="title is-5">Market Indices</h3>
-    <div class="field"><div class="control"><div class="select"><select onchange="idxState.market=this.value;idxState.offset=0;loadIndices()">
-      <option value="" ${!s.market?"selected":""}>All</option><option value="HK" ${s.market==="HK"?"selected":""}>HK</option><option value="US" ${s.market==="US"?"selected":""}>US</option><option value="CN" ${s.market==="CN"?"selected":""}>CN</option></select></div></div></div>
-    ${renderPagination(data.total, s.limit, s.offset, "idxState.offset=__VAL__;loadIndices()")}
-    <div class="table-container"><table class="table is-fullwidth is-striped is-hoverable is-size-7">
-      <thead><tr><th>Date</th><th>Index</th><th>Open</th><th>High</th><th>Low</th><th>Close</th><th>Chg%</th><th>Source</th></tr></thead>
-      <tbody>${data.indices.map(i => `<tr><td>${i.trade_date}</td><td><strong>${i.index_name||i.index_code}</strong></td>
-        <td>${fmtPrice(i.open)}</td><td>${fmtPrice(i.high)}</td><td>${fmtPrice(i.low)}</td>
-        <td><strong>${fmtPrice(i.close)}</strong></td><td>${fmtPct(i.change_pct)}</td><td>${i.source_code}</td></tr>`).join("")}</tbody>
-    </table></div>`;
+  document.getElementById("indices-table").innerHTML = '<p class="has-text-grey">Loading indices...</p>';
+  try {
+    const data = await apiFetch(q);
+    document.getElementById("indices-table").innerHTML = data.indices.length
+      ? `<div class="table-container"><table class="table is-fullwidth is-striped is-hoverable is-size-7">
+          <thead><tr><th>Date</th><th>Index</th><th>Open</th><th>High</th><th>Low</th><th>Close</th><th>Chg%</th><th>Source</th></tr></thead>
+          <tbody>${data.indices.map(i => `<tr><td>${i.trade_date}</td><td><strong>${esc(i.index_name||i.index_code)}</strong></td>
+            <td>${fmtPrice(i.open)}</td><td>${fmtPrice(i.high)}</td><td>${fmtPrice(i.low)}</td>
+            <td><strong>${fmtPrice(i.close)}</strong></td><td>${fmtPct(i.change_pct)}</td><td>${esc(i.source_code)}</td></tr>`).join("")}</tbody>
+        </table></div>`
+      : '<p class="has-text-grey">No index data yet.</p>';
+    document.getElementById("indices-pagination").innerHTML =
+      renderPagination(data.total, s.limit, s.offset, "idxState.offset=__VAL__;loadIndices()");
+  } catch (e) {
+    document.getElementById("indices-table").innerHTML =
+      `<p class="has-text-danger">Failed to load indices: ${esc(e.message)}</p>`;
+  }
 }
 
 // ---------- Short selling ----------
 let ssState = { ticker: "", trade_date: "", limit: 50, offset: 0 };
+function searchShort() {
+  ssState.ticker = document.getElementById("ss-ticker").value;
+  ssState.trade_date = document.getElementById("ss-date").value;
+  ssState.offset = 0;
+  loadShort();
+}
 async function loadShort() {
   const s = ssState;
   let q = `/short-selling?limit=${s.limit}&offset=${s.offset}`;
   if (s.ticker) q += `&ticker=${encodeURIComponent(s.ticker)}`;
   if (s.trade_date) q += `&trade_date=${s.trade_date}`;
-  const data = await apiFetch(q);
-  document.getElementById("tab-short").innerHTML = `
-    <h3 class="title is-5">Short Selling (HKEX)</h3>
-    <div class="field has-addons">
-      <div class="control"><input class="input" id="ss-ticker" type="text" placeholder="Ticker (e.g. 0700.HK)" value="${s.ticker}"></div>
-      <div class="control"><input class="input" id="ss-date" type="date" value="${s.trade_date}"></div>
-      <div class="control"><button class="button is-info" onclick="ssState.ticker=document.getElementById('ss-ticker').value;ssState.trade_date=document.getElementById('ss-date').value;ssState.offset=0;loadShort()">Filter</button></div>
-    </div>
-    ${renderPagination(data.total, s.limit, s.offset, "ssState.offset=__VAL__;loadShort()")}
-    <div class="table-container"><table class="table is-fullwidth is-striped is-hoverable is-size-7">
-      <thead><tr><th>Date</th><th>Ticker</th><th>Short Shares</th><th>Short Turnover</th><th>Total Turnover</th><th>Short %</th></tr></thead>
-      <tbody>${data.entries.map(e => { const pct = e.total_turnover ? ((e.short_turnover/e.total_turnover)*100).toFixed(1)+"%" : "-";
-        return `<tr><td>${e.trade_date}</td><td><strong>${e.ticker}</strong></td><td>${fmt(e.short_shares)}</td><td>${fmt(e.short_turnover)}</td><td>${fmt(e.total_turnover)}</td><td>${pct}</td></tr>`; }).join("")}</tbody>
-    </table></div>`;
+  document.getElementById("short-table").innerHTML = '<p class="has-text-grey">Loading short selling...</p>';
+  try {
+    const data = await apiFetch(q);
+    document.getElementById("short-table").innerHTML = data.entries.length
+      ? `<div class="table-container"><table class="table is-fullwidth is-striped is-hoverable is-size-7">
+          <thead><tr><th>Date</th><th>Ticker</th><th>Short Shares</th><th>Short Turnover</th><th>Total Turnover</th><th>Short %</th></tr></thead>
+          <tbody>${data.entries.map(e => { const pct = e.total_turnover ? ((e.short_turnover/e.total_turnover)*100).toFixed(1)+"%" : "-";
+            return `<tr><td>${e.trade_date}</td><td><strong>${esc(e.ticker)}</strong></td><td>${fmt(e.short_shares)}</td><td>${fmt(e.short_turnover)}</td><td>${fmt(e.total_turnover)}</td><td>${pct}</td></tr>`; }).join("")}</tbody>
+        </table></div>`
+      : '<p class="has-text-grey">No short selling data for these filters.</p>';
+    document.getElementById("short-pagination").innerHTML =
+      renderPagination(data.total, s.limit, s.offset, "ssState.offset=__VAL__;loadShort()");
+  } catch (e) {
+    document.getElementById("short-table").innerHTML =
+      `<p class="has-text-danger">Failed to load short selling: ${esc(e.message)}</p>`;
+  }
 }
 
 // ---------- Queue ----------
@@ -462,6 +521,8 @@ async function loadLogs() {
 // ---------- Init ----------
 if (apiKey) document.getElementById("key-input").value = apiKey;
 checkAuth();
+document.getElementById("stk-search").addEventListener("keyup", e => { if (e.key === "Enter") searchStocks(); });
+document.getElementById("ss-ticker").addEventListener("keyup", e => { if (e.key === "Enter") searchShort(); });
 loadDashboard();
 loadStocks();
 loadWatchlist();
