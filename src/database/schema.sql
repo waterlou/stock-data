@@ -144,16 +144,20 @@ CREATE TABLE IF NOT EXISTS scan_logs (
 -- Seed reference data
 INSERT INTO markets (market_code, market_name, currency, timezone) VALUES
     ('HK', 'Hong Kong', 'HKD', 'Asia/Hong_Kong'),
-    ('US', 'United States', 'USD', 'America/New_York')
+    ('US', 'United States', 'USD', 'America/New_York'),
+    ('CN', 'China', 'CNY', 'Asia/Shanghai')
 ON CONFLICT (market_code) DO NOTHING;
 
 INSERT INTO data_sources (source_code, source_name) VALUES
     ('hkex', 'HKEX'),
-    ('yahoo', 'Yahoo Finance')
+    ('yahoo', 'Yahoo Finance'),
+    ('tencent', 'Tencent Finance')
 ON CONFLICT (source_code) DO NOTHING;
 
 INSERT INTO market_sources (market_code, source_code, priority) VALUES
     ('HK', 'hkex', 1),
     ('HK', 'yahoo', 2),
-    ('US', 'yahoo', 1)
+    ('HK', 'tencent', 3),
+    ('US', 'yahoo', 1),
+    ('CN', 'tencent', 1)
 ON CONFLICT (market_code, source_code) DO NOTHING;

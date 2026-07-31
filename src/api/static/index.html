@@ -155,7 +155,8 @@ async function loadStocks() {
       <div class="control"><div class="select"><select onchange="stockState.market=this.value;stockState.offset=0;loadStocks()">
         <option value="" ${!s.market?"selected":""}>All markets</option>
         <option value="HK" ${s.market==="HK"?"selected":""}>HK</option>
-        <option value="US" ${s.market==="US"?"selected":""}>US</option></select></div></div>
+        <option value="US" ${s.market==="US"?"selected":""}>US</option>
+        <option value="CN" ${s.market==="CN"?"selected":""}>CN</option></select></div></div>
       <div class="control"><div class="select"><select onchange="stockState.watchlist=this.value;stockState.offset=0;loadStocks()">
         <option value="" ${s.watchlist===""?"selected":""}>Any watchlist</option>
         <option value="true" ${s.watchlist==="true"?"selected":""}>Watchlist only</option></select></div></div>
@@ -253,7 +254,7 @@ async function loadWatchlist() {
           <div class="field"><label class="label">Tickers (one per line, e.g. 0700.HK, AAPL, 00700)</label>
           <div class="control"><textarea class="textarea" id="wl-text" rows="6" placeholder="0700.HK&#10;AAPL&#10;MSFT&#10;00700"></textarea></div></div>
           <div class="field"><label class="label">Market (optional, default auto-detect)</label>
-          <div class="control"><div class="select"><select id="wl-market"><option value="">Auto</option><option value="HK">HK</option><option value="US">US</option></select></div></div></div>
+          <div class="control"><div class="select"><select id="wl-market"><option value="">Auto</option><option value="HK">HK</option><option value="US">US</option><option value="CN">CN</option></select></div></div></div>
           <div class="field is-grouped">
             <div class="control"><button class="button is-info" onclick="addWatchlist()">Add</button></div>
             <div class="control"><button class="button is-primary" onclick="importWatchlist()">Import</button></div>
@@ -302,7 +303,7 @@ async function loadIndices() {
   document.getElementById("tab-indices").innerHTML = `
     <h3 class="title is-5">Market Indices</h3>
     <div class="field"><div class="control"><div class="select"><select onchange="idxState.market=this.value;idxState.offset=0;loadIndices()">
-      <option value="" ${!s.market?"selected":""}>All</option><option value="HK" ${s.market==="HK"?"selected":""}>HK</option><option value="US" ${s.market==="US"?"selected":""}>US</option></select></div></div></div>
+      <option value="" ${!s.market?"selected":""}>All</option><option value="HK" ${s.market==="HK"?"selected":""}>HK</option><option value="US" ${s.market==="US"?"selected":""}>US</option><option value="CN" ${s.market==="CN"?"selected":""}>CN</option></select></div></div></div>
     ${renderPagination(data.total, s.limit, s.offset, "idxState.offset=__VAL__;loadIndices()")}
     <div class="table-container"><table class="table is-fullwidth is-striped is-hoverable is-size-7">
       <thead><tr><th>Date</th><th>Index</th><th>Open</th><th>High</th><th>Low</th><th>Close</th><th>Chg%</th><th>Source</th></tr></thead>

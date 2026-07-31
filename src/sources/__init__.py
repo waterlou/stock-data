@@ -3,6 +3,8 @@ from src.sources.registry import (
 )
 from src.sources.hkex import HkexSource
 from src.sources.yahoo import YahooSource
+from src.sources.tencent import TencentSource
 
 register_source(HkexSource())
 register_source(YahooSource())
+register_source(TencentSource())

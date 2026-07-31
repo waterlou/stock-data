@@ -98,3 +98,23 @@ def test_ticker_normalization():
     assert normalize_ticker("00700.HK", "HK") == "0700.HK"
     assert normalize_ticker("aapl", "US") == "AAPL"
     assert normalize_ticker("AAPL.US", "US") == "AAPL"
+
+
+def test_cn_ticker_normalization():
+    from src.sources.normalizer import normalize_ticker, market_from_ticker
+    assert normalize_ticker("600519") == "600519.SH"
+    assert normalize_ticker("600519.SH") == "600519.SH"
+    assert normalize_ticker("sh600519") == "600519.SH"
+    assert normalize_ticker("000001") == "000001.SZ"
+    assert normalize_ticker("sz000001") == "000001.SZ"
+    assert market_from_ticker("600519.SH") == "CN"
+    assert market_from_ticker("sz000001") == "CN"
+    assert market_from_ticker("0700.HK") == "HK"
+
+
+def test_tencent_symbol_conversion():
+    from src.sources.tencent import to_tencent
+    assert to_tencent("0700.HK") == "hk00700"
+    assert to_tencent("09988.HK") == "hk09988"
+    assert to_tencent("600519.SH") == "sh600519"
+    assert to_tencent("000001.SZ") == "sz000001"

@@ -78,7 +78,9 @@ def resolve_market(ticker: str, market: str = "") -> str:
     m = market_from_ticker(ticker)
     if m:
         return m
-    return "HK" if ticker.strip().isdigit() else "US"
+    if ticker.strip().isdigit():
+        return "HK" if len(ticker.strip()) < 6 else "CN"
+    return "US"
 
 
 def resolve_stock(ticker: str, market: str = "") -> Optional[dict]:
