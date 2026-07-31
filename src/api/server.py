@@ -2,7 +2,6 @@ import logging
 import os
 import threading
 import time
-from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -12,7 +11,7 @@ import pytz
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI, Query, Request, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
+from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from src.config import (API_KEY, INTRADAY_RECENCY_MINUTES, INTRADAY_RETENTION_DAYS,
@@ -123,7 +122,8 @@ _rate_last_sweep = [time.monotonic()]
 @app.middleware("http")
 async def rate_limit(request: Request, call_next):
     if request.url.path.startswith("/api/"):
-        client = request.client.host if request.client else "unknown"
+        auth_key = request.headers.get("x-api-key", "")
+        client = (request.client.host if request.client else "unknown") + "|" + auth_key
         now = time.monotonic()
         with _rate_lock:
             # Bounded memory: evict idle buckets once a minute.
@@ -167,17 +167,30 @@ def resolve_market(ticker: str, market: str = "") -> str:
     return "US"
 
 
+def _normalize(market: str, ticker: str) -> str:
+    try:
+        return normalize_ticker(ticker, market)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 def resolve_stock(ticker: str, market: str = "") -> Optional[dict]:
     m = resolve_market(ticker, market)
-    canonical = normalize_ticker(ticker, m)
+    canonical = _normalize(m, ticker)
     return queries.get_stock_by_ticker(m, canonical)
+
+
+_overview_cache = {"ts": 0.0, "data": None}
 
 
 @app.get("/api/overview")
 def overview():
-    stats = queries.get_dashboard_stats()
-    stats["latest_trade_date"] = serialize(stats["latest_trade_date"])
-    return stats
+    now = time.time()
+    if now - _overview_cache["ts"] > 60:
+        stats = queries.get_dashboard_stats()
+        stats["latest_trade_date"] = serialize(stats["latest_trade_date"])
+        _overview_cache.update({"ts": now, "data": stats})
+    return _overview_cache["data"]
 
 
 @app.get("/api/markets")
@@ -248,7 +261,10 @@ def update_source(market: str, source_code: str, body: dict):
         return JSONResponse(status_code=400, content={"error": "priority must be an integer 1-100"})
     if enabled is not None and not isinstance(enabled, bool):
         return JSONResponse(status_code=400, content={"error": "enabled must be a boolean"})
-    queries.update_source(market, source_code, priority=priority, enabled=enabled)
+    if not queries.market_exists(market) or not queries.source_exists(source_code):
+        return JSONResponse(status_code=404, content={"error": "Market or source not found"})
+    if not queries.update_source(market, source_code, priority=priority, enabled=enabled):
+        return JSONResponse(status_code=404, content={"error": "Source not found for this market"})
     return {"updated": True, "market": market, "source_code": source_code}
 
 
@@ -332,10 +348,22 @@ def import_watchlist(body: dict):
 
 @app.get("/api/watchlist/export")
 def export_watchlist(market: str = ""):
-    rows, _ = queries.get_stocks(market=market, watchlist=True, limit=1000)
+    rows, total = queries.get_stocks(market=market, watchlist=True, limit=1000)
+    offset = 1000
+    while offset < total:
+        more, _ = queries.get_stocks(market=market, watchlist=True, limit=1000, offset=offset)
+        if not more:
+            break
+        rows += more
+        offset += len(more)
+
+    def _csv_field(v):
+        s = str(v or "").lstrip("=+-@").replace('"', '""')
+        return f'"{s}"' if any(c in s for c in ',"') else s
+
     lines = ["ticker,name,market"]
     for r in rows:
-        lines.append(f"{r['ticker']},{r['name'] or ''},{r['market_code']}")
+        lines.append(f"{_csv_field(r['ticker'])},{_csv_field(r['name'])},{_csv_field(r['market_code'])}")
     return PlainTextResponse("\n".join(lines) + "\n", media_type="text/csv")
 
 
@@ -353,7 +381,7 @@ def stock_prices(
     stock = resolve_stock(ticker, market)
     if not stock:
         m = resolve_market(ticker, market)
-        queries.enqueue(m, normalize_ticker(ticker, m), "price")
+        queries.enqueue(m, _normalize(m, ticker), "price")
         return JSONResponse(status_code=202, content={"status": "queued", "message": "Data is being fetched. Retry in ~30s."})
 
     if days:
@@ -388,7 +416,7 @@ def stock_intraday(
     stock = resolve_stock(ticker, market)
     if not stock:
         m = resolve_market(ticker, market)
-        queries.enqueue(m, normalize_ticker(ticker, m), data_type)
+        queries.enqueue(m, _normalize(m, ticker), data_type)
         return JSONResponse(status_code=202, content={"status": "queued", "message": "Intraday data is being fetched."})
 
     recency_hours = INTRADAY_RECENCY_MINUTES / 60
@@ -419,7 +447,7 @@ def stock_corporate_actions(ticker: str, market: str = ""):
     stock = resolve_stock(ticker, market)
     if not stock:
         m = resolve_market(ticker, market)
-        queries.enqueue(m, normalize_ticker(ticker, m), "corporate_actions")
+        queries.enqueue(m, _normalize(m, ticker), "corporate_actions")
         return JSONResponse(status_code=202, content={"status": "queued", "message": "Corporate actions are being fetched."})
     if not queries.has_corporate_actions(stock["id"]) and not queries.recently_fetched(
             stock["market_code"], stock["ticker"], "corporate_actions"):
@@ -433,13 +461,14 @@ def stock_fundamentals(ticker: str, market: str = ""):
     stock = resolve_stock(ticker, market)
     if not stock:
         m = resolve_market(ticker, market)
-        queries.enqueue(m, normalize_ticker(ticker, m), "fundamentals")
+        queries.enqueue(m, _normalize(m, ticker), "fundamentals")
         return JSONResponse(status_code=202, content={"status": "queued", "message": "Fundamentals are being fetched."})
     if not queries.has_fundamentals(stock["id"]) and not queries.recently_fetched(
             stock["market_code"], stock["ticker"], "fundamentals"):
         queries.enqueue(stock["market_code"], stock["ticker"], "fundamentals")
         return JSONResponse(status_code=202, content={"status": "queued", "message": "Fundamentals are being fetched."})
-    return {"fundamentals": rows_to_json([queries.get_fundamentals(stock["id"])])[0]}
+    f = queries.get_fundamentals(stock["id"])
+    return {"fundamentals": rows_to_json([f])[0] if f else None}
 
 
 @app.get("/api/indices")

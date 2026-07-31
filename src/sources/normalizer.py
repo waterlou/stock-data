@@ -14,6 +14,8 @@ def normalize_ticker(value: str, market: str = "") -> str:
         raise ValueError("Empty ticker")
     if len(value) > 20:
         raise ValueError(f"Ticker too long: {value[:20]}...")
+    if not all(c.isalnum() or c in ".-" for c in value):
+        raise ValueError(f"Ticker has invalid characters: {value!r}")
 
     if value.endswith(".HK"):
         market = "HK"

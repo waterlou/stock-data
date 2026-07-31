@@ -34,7 +34,8 @@ def process_queue_item(item: dict):
         # insert targets a dropped partition and fails.
         window = min(INTRADAY_WINDOW_DAYS.get(interval, 60), INTRADAY_RETENTION_DAYS)
         start = date.today() - timedelta(days=window)
-        queries.ensure_intraday_partitions()
+        queries.ensure_intraday_partitions(
+            lookback_months=max(1, INTRADAY_RETENTION_DAYS // 30 + 1))
         try:
             bars = source.fetch_intraday(ticker, interval, start, date.today())
             for b in bars:
@@ -91,8 +92,13 @@ def _fail(source_code: str, error: Exception):
 
 def process_pending(poll_interval: int = 5):
     while True:
-        queries.recover_stale_queue_items()
-        item = queries.claim_queue_item()
+        try:
+            queries.recover_stale_queue_items()
+            item = queries.claim_queue_item()
+        except Exception as e:
+            logger.error("Queue worker DB error: %s", e)
+            time.sleep(poll_interval)
+            continue
         if not item:
             time.sleep(poll_interval)
             continue
@@ -102,4 +108,8 @@ def process_pending(poll_interval: int = 5):
             queries.complete_queue_item(item["id"])
         except Exception as e:
             logger.error("Queue item %s failed: %s", item["id"], e)
-            queries.complete_queue_item(item["id"], error=str(e))
+            try:
+                queries.complete_queue_item(item["id"], error=str(e))
+            except Exception as e2:
+                logger.error("Failed to mark queue item failed: %s", e2)
+            time.sleep(poll_interval)

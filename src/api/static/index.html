@@ -257,7 +257,7 @@ function esc(v) {
   return String(v ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 function jsStr(v) {
-  return String(v ?? "").replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/\n/g, "\\n").replace(/\r/g, "");
+  return String(v ?? "").replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/"/g, "&quot;").replace(/\n/g, "\\n").replace(/\r/g, "");
 }
 const fmtPct = v => {
   if (v == null) return "-";
@@ -321,7 +321,7 @@ function searchStocks() {
     } else if (data.total === 0 && isTicker && input.length >= 2) {
       apiFetch(`/stocks/${encodeURIComponent(stockState.search)}/prices`).then(res => {
         if (res.status === "queued") {
-          toast(`Fetching ${stockState.search} from data sources — check back in ~30s`);
+          toast(`Fetching ${esc(stockState.search)} from data sources — check back in ~30s`);
           setTimeout(searchStocks, 25000);
         }
       }).catch(() => {});
@@ -449,7 +449,7 @@ async function addWatchlist() {
   if (!tickers.length) return toast("Enter at least one ticker", true);
   const r = await apiFetch("/watchlist", { method: "POST", headers: {"Content-Type":"application/json"},
     body: JSON.stringify({ tickers, market: document.getElementById("wl-market").value }) });
-  toast(`Added: ${r.added.join(", ")}`);
+  toast(`Added: ${r.added.map(esc).join(", ")}`);
   loadWatchlist();
 }
 async function importWatchlist() {
@@ -457,12 +457,12 @@ async function importWatchlist() {
   if (!text.trim()) return toast("Enter tickers to import", true);
   const r = await apiFetch("/watchlist/import", { method: "POST", headers: {"Content-Type":"application/json"},
     body: JSON.stringify({ text, market: document.getElementById("wl-market").value }) });
-  toast(`Imported: ${r.added.join(", ")}`);
+  toast(`Imported: ${r.added.map(esc).join(", ")}`);
   loadWatchlist();
 }
 async function removeWatch(ticker) {
   await apiFetch(`/watchlist/${encodeURIComponent(ticker)}`, { method: "DELETE" });
-  toast(`Removed ${ticker}`);
+  toast(`Removed ${esc(ticker)}`);
   loadWatchlist();
 }
 
@@ -534,9 +534,9 @@ async function loadQueue() {
     <h3 class="title is-5">Download Queue</h3>
     <div class="table-container"><table class="table is-fullwidth is-striped is-size-7">
       <thead><tr><th>ID</th><th>Market</th><th>Ticker</th><th>Type</th><th>Status</th><th>Error</th><th>Created</th></tr></thead>
-      <tbody>${data.items.map(i => `<tr><td>${i.id}</td><td>${i.market_code}</td><td><strong>${i.ticker}</strong></td><td>${i.data_type}</td>
-        <td><span class="tag ${i.status==="completed"?"is-success":i.status==="failed"?"is-danger":"is-warning"}">${i.status}</span></td>
-        <td class="is-size-7" style="max-width:200px">${i.error_message||"-"}</td><td class="is-size-7">${i.created_at||"-"}</td></tr>`).join("")}</tbody>
+      <tbody>${data.items.map(i => `<tr><td>${i.id}</td><td>${esc(i.market_code)}</td><td><strong>${esc(i.ticker)}</strong></td><td>${esc(i.data_type)}</td>
+        <td><span class="tag ${i.status==="completed"?"is-success":i.status==="failed"?"is-danger":"is-warning"}">${esc(i.status)}</span></td>
+        <td class="is-size-7" style="max-width:200px">${esc(i.error_message||"-")}</td><td class="is-size-7">${esc(i.created_at||"-")}</td></tr>`).join("")}</tbody>
     </table></div>`;
 }
 
@@ -547,9 +547,9 @@ async function loadLogs() {
     <h3 class="title is-5">Scan Logs</h3>
     <div class="table-container"><table class="table is-fullwidth is-striped is-size-7">
       <thead><tr><th>ID</th><th>Market</th><th>Source</th><th>Type</th><th>Status</th><th>Processed</th><th>Inserted</th><th>Error</th><th>Completed</th></tr></thead>
-      <tbody>${data.logs.map(l => `<tr><td>${l.id}</td><td>${l.market_code||"-"}</td><td>${l.source_code||"-"}</td><td>${l.scan_type}</td>
-        <td><span class="tag ${l.status==="success"?"is-success":"is-danger"}">${l.status}</span></td><td>${l.items_processed??"-"}</td><td>${l.items_inserted??"-"}</td>
-        <td class="is-size-7" style="max-width:200px">${l.error_message||"-"}</td><td class="is-size-7">${l.completed_at||"-"}</td></tr>`).join("")}</tbody>
+      <tbody>${data.logs.map(l => `<tr><td>${l.id}</td><td>${esc(l.market_code||"-")}</td><td>${esc(l.source_code||"-")}</td><td>${esc(l.scan_type)}</td>
+        <td><span class="tag ${l.status==="success"?"is-success":"is-danger"}">${esc(l.status)}</span></td><td>${l.items_processed??"-"}</td><td>${l.items_inserted??"-"}</td>
+        <td class="is-size-7" style="max-width:200px">${esc(l.error_message||"-")}</td><td class="is-size-7">${esc(l.completed_at||"-")}</td></tr>`).join("")}</tbody>
     </table></div>`;
 }
 

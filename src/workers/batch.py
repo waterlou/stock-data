@@ -18,52 +18,49 @@ def run_hk_batch():
         logger.warning("No latest HK trading date found")
         return
 
-    with_registered = registry.enabled_sources_for("HK")
-    source = next((s for s in with_registered if s.supports_bulk_daily), None)
-    if not source:
+    bulk_sources = [s for s in registry.enabled_sources_for("HK") if s.supports_bulk_daily]
+    if not bulk_sources:
         logger.warning("No HK bulk source available")
         return
 
-    try:
-        data = source.fetch_bulk_daily(trade_date)
-    except Exception as e:
-        logger.error("HK bulk fetch failed: %s", e)
-        queries.record_source_failure(source.source_code, str(e))
-        queries.log_scan("HK", source.source_code, "batch", "error", error_message=str(e))
-        return
+    data = {"prices": [], "short_selling": [], "indices": []}
+    source = None
+    for candidate in bulk_sources:
+        try:
+            candidate_data = candidate.fetch_bulk_daily(trade_date)
+        except Exception as e:
+            logger.error("HK bulk fetch failed (%s): %s", candidate.source_code, e)
+            queries.record_source_failure(candidate.source_code, str(e))
+            continue
+        queries.record_source_success(candidate.source_code)
+        # Keep index rows from any source; use the first source that yields prices.
+        data["indices"] = candidate_data.get("indices") or data["indices"]
+        if candidate_data.get("prices"):
+            data["prices"] = candidate_data["prices"]
+            data["short_selling"] = candidate_data.get("short_selling", [])
+            source = candidate
+            break
 
-    empty = not data.get("prices") and not data.get("short_selling") and not data.get("indices")
-    if empty:
-        logger.error("HK bulk parsed zero rows (page drift or holiday?)")
-        queries.record_source_failure(source.source_code, "bulk fetch returned no rows")
-        queries.log_scan("HK", source.source_code, "batch", "error",
-                         error_message="bulk fetch returned no rows")
+    if not source or not data["prices"]:
+        logger.error("HK batch: no bulk source produced price rows")
+        queries.log_scan("HK", "hkex", "batch", "error",
+                         error_message="no bulk source produced price rows")
         return
 
     inserted = _save_bulk("HK", data)
     queries.record_source_success(source.source_code)
 
-    # HKEX page has no index data; fill indices from another bulk source if available.
-    for extra in registry.enabled_sources_for("HK"):
-        if extra.source_code == source.source_code or not extra.supports_bulk_daily:
-            continue
-        try:
-            extra_data = extra.fetch_bulk_daily(trade_date)
-            if extra_data.get("indices"):
-                queries.upsert_indices(extra_data["indices"])
-                logger.info("HK indices from %s: %d", extra.source_code, len(extra_data["indices"]))
-                break
-        except Exception as e:
-            logger.warning("HK index fill from %s failed: %s", extra.source_code, e)
+    if data["indices"]:
+        queries.upsert_indices(data["indices"])
 
     queries.log_scan("HK", source.source_code, "batch", "success",
                      items_processed=len(data["prices"]), items_inserted=inserted)
-    logger.info("HK batch done: %d prices inserted", inserted)
+    logger.info("HK batch done: %d prices inserted (source=%s)", inserted, source.source_code)
 
 
 def run_us_batch():
     logger.info("Starting US batch")
-    rows, _ = queries.get_stocks(market="US", watchlist=True, limit=1000)
+    rows, total = queries.get_stocks(market="US", watchlist=True, limit=1000)
     if not rows:
         logger.info("No US watchlist stocks to fetch")
         return
@@ -77,8 +74,23 @@ def run_us_batch():
             run_us_stock(stock, date_from)
         except Exception as e:
             logger.error("US batch failed for %s: %s", stock["ticker"], e)
-    queries.log_scan("US", "yahoo", "batch", "success", items_processed=len(rows))
-    logger.info("US batch done: %d stocks", len(rows))
+    offset = 1000
+    while offset < total:
+        more, _ = queries.get_stocks(market="US", watchlist=True, limit=1000, offset=offset)
+        if not more:
+            break
+        for stock in more:
+            try:
+                date_from = FULL_HISTORY_FROM
+                if stock.get("last_date"):
+                    date_from = stock["last_date"] - timedelta(days=10)
+                run_us_stock(stock, date_from)
+            except Exception as e:
+                logger.error("US batch failed for %s: %s", stock["ticker"], e)
+        offset += len(more)
+    source_code = registry.best_source("US", "supports_history").source_code if registry.best_source("US", "supports_history") else "yahoo"
+    queries.log_scan("US", source_code, "batch", "success", items_processed=total)
+    logger.info("US batch done: %d stocks", total)
 
 
 def run_us_stock(stock: dict, date_from: date = FULL_HISTORY_FROM, date_to: date = None):
@@ -109,17 +121,17 @@ def run_source_health_check():
     A probe that raises SourceError OR returns too few rows marks the source
     unhealthy (catches both outages and silent empty responses)."""
     from src.sources.base import SourceError
-    probes = {"yahoo": ("US", "AAPL", "supports_history", 1),
-              "tencent": ("CN", "600519.SH", "supports_history", 1),
-              "akshare": ("CN", "600519.SH", "supports_history", 1),
-              "hkex": ("HK", "", "supports_bulk_daily", 100),
-              "aastocks": ("HK", "", "supports_bulk_daily", 1)}
+    probes = {"yahoo": ("US", "AAPL", "supports_history", 1, 5),
+              "tencent": ("CN", "600519.SH", "supports_history", 1, 14),
+              "akshare": ("CN", "600519.SH", "supports_history", 1, 14),
+              "hkex": ("HK", "", "supports_bulk_daily", 100, 0),
+              "aastocks": ("HK", "", "supports_bulk_daily", 1, 0)}
     probe_date = date.today()
     try:
         probe_date = get_latest_trading_date() or probe_date  # HKEX page lags realtime
     except Exception:
         pass
-    for code, (market, ticker, cap, min_rows) in probes.items():
+    for code, (market, ticker, cap, min_rows, window) in probes.items():
         source = registry.get_source(code)
         if not source:
             continue
@@ -128,7 +140,7 @@ def run_source_health_check():
                 result = source.fetch_bulk_daily(probe_date)
                 n = len(result.get("indices", []))
             else:
-                n = len(source.fetch_prices(ticker, probe_date - timedelta(days=5), probe_date))
+                n = len(source.fetch_prices(ticker, probe_date - timedelta(days=window), probe_date))
             if n < min_rows:
                 raise SourceError(f"probe returned only {n} rows (expected >= {min_rows})")
             queries.record_source_success(code)

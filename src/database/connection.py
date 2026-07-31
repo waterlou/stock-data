@@ -2,6 +2,7 @@ import psycopg2
 import psycopg2.extras
 import psycopg2.pool
 from contextlib import contextmanager
+from datetime import datetime
 from typing import Generator
 
 from src.config import DATABASE_URL
@@ -9,6 +10,21 @@ from src.config import DATABASE_URL
 MAX_CONNECTIONS = 20
 
 _pool = None
+
+
+def _aware_ts(value, cursor):
+    """Convert TIMESTAMPTZ strings to tz-aware datetimes (UTC)."""
+    if isinstance(value, datetime):
+        return value
+    try:
+        return datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return value
+
+
+# TIMESTAMPTZ OID 1184 -> tz-aware datetime (default psycopg2 returns naive)
+psycopg2.extensions.register_type(
+    psycopg2.extensions.new_type((1184,), "TIMESTAMPTZ_AWARE", _aware_ts))
 
 
 def _get_pool() -> psycopg2.pool.ThreadedConnectionPool:

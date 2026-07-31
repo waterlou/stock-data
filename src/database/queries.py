@@ -1,5 +1,4 @@
 from datetime import date, datetime, timedelta
-from decimal import Decimal
 from typing import Dict, List, Optional, Tuple
 
 from src.database.connection import get_cursor
@@ -521,14 +520,6 @@ def get_intraday_bars(stock_id: int, interval_min: int, from_date: Optional[date
     return rows, total
 
 
-def has_intraday(stock_id: int, interval_min: int) -> bool:
-    with get_cursor() as cur:
-        cur.execute("""
-            SELECT 1 FROM intraday_prices WHERE stock_id = %s AND interval_min = %s LIMIT 1
-        """, (stock_id, interval_min))
-        return cur.fetchone() is not None
-
-
 def latest_intraday_dt(stock_id: int, interval_min: int):
     with get_cursor() as cur:
         cur.execute("""
@@ -638,18 +629,37 @@ def get_sources() -> List[Dict]:
         return [dict(r) for r in cur.fetchall()]
 
 
+def market_exists(market_code: str) -> bool:
+    with get_cursor() as cur:
+        cur.execute("SELECT 1 FROM markets WHERE market_code = %s", (market_code,))
+        return cur.fetchone() is not None
+
+
+def source_exists(source_code: str) -> bool:
+    with get_cursor() as cur:
+        cur.execute("SELECT 1 FROM data_sources WHERE source_code = %s", (source_code,))
+        return cur.fetchone() is not None
+
+
 def update_source(market_code: str, source_code: str, priority: Optional[int] = None,
                   enabled: Optional[bool] = None) -> bool:
-    with get_cursor() as cur:
-        if priority is not None:
+    """Update priority and/or enabled. Returns False if the market/source pairing doesn't exist."""
+    if priority is not None:
+        with get_cursor() as cur:
             cur.execute("""
                 INSERT INTO market_sources (market_code, source_code, priority)
                 VALUES (%s, %s, %s)
                 ON CONFLICT (market_code, source_code) DO UPDATE SET priority = EXCLUDED.priority
             """, (market_code, source_code, priority))
-        if enabled is not None:
+    if enabled is not None:
+        with get_cursor() as cur:
             cur.execute("UPDATE data_sources SET enabled = %s WHERE source_code = %s", (enabled, source_code))
-        return cur.rowcount > 0 or priority is not None
+    if priority is None and enabled is not None:
+        with get_cursor() as cur:
+            cur.execute("SELECT 1 FROM market_sources WHERE market_code = %s AND source_code = %s",
+                        (market_code, source_code))
+            return cur.fetchone() is not None
+    return True
 
 
 def get_dashboard_stats() -> Dict:
