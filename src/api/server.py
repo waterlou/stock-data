@@ -198,10 +198,11 @@ def stock_prices(
 
     fd = date.fromisoformat(from_date) if from_date else None
     td = date.fromisoformat(to_date) if to_date else None
-    rows, total = queries.get_prices(stock["id"], fd, td, limit, offset)
-    if not rows:
+    if not queries.has_prices(stock["id"]) and not queries.recently_fetched(
+            stock["market_code"], stock["ticker"], "price"):
         queries.enqueue(stock["market_code"], stock["ticker"], "price")
         return {"status": "queued", "message": "Data is being fetched. Retry in ~30s."}, 202
+    rows, total = queries.get_prices(stock["id"], fd, td, limit, offset)
     return {"prices": rows_to_json(rows), "total": total}
 
 
@@ -212,11 +213,11 @@ def stock_corporate_actions(ticker: str, market: str = ""):
         m = resolve_market(ticker, market)
         queries.enqueue(m, normalize_ticker(ticker, m), "corporate_actions")
         return {"status": "queued", "message": "Corporate actions are being fetched."}, 202
-    actions = queries.get_corporate_actions(stock["id"])
-    if not actions:
+    if not queries.has_corporate_actions(stock["id"]) and not queries.recently_fetched(
+            stock["market_code"], stock["ticker"], "corporate_actions"):
         queries.enqueue(stock["market_code"], stock["ticker"], "corporate_actions")
         return {"status": "queued", "message": "Corporate actions are being fetched."}, 202
-    return {"actions": rows_to_json(actions)}
+    return {"actions": rows_to_json(queries.get_corporate_actions(stock["id"]))}
 
 
 @app.get("/api/stocks/{ticker}/fundamentals")
@@ -226,11 +227,11 @@ def stock_fundamentals(ticker: str, market: str = ""):
         m = resolve_market(ticker, market)
         queries.enqueue(m, normalize_ticker(ticker, m), "fundamentals")
         return {"status": "queued", "message": "Fundamentals are being fetched."}, 202
-    f = queries.get_fundamentals(stock["id"])
-    if not f:
+    if not queries.has_fundamentals(stock["id"]) and not queries.recently_fetched(
+            stock["market_code"], stock["ticker"], "fundamentals"):
         queries.enqueue(stock["market_code"], stock["ticker"], "fundamentals")
         return {"status": "queued", "message": "Fundamentals are being fetched."}, 202
-    return {"fundamentals": rows_to_json([f])[0]}
+    return {"fundamentals": rows_to_json([queries.get_fundamentals(stock["id"])])[0]}
 
 
 @app.get("/api/indices")

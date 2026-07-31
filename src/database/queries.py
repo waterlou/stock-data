@@ -246,6 +246,12 @@ def get_corporate_actions(stock_id: int) -> List[Dict]:
         return [dict(r) for r in cur.fetchall()]
 
 
+def has_corporate_actions(stock_id: int) -> bool:
+    with get_cursor() as cur:
+        cur.execute("SELECT 1 FROM corporate_actions WHERE stock_id = %s LIMIT 1", (stock_id,))
+        return cur.fetchone() is not None
+
+
 # ---------------------------------------------------------------- fundamentals
 
 def upsert_fundamentals(f: Fundamentals) -> int:
@@ -275,6 +281,25 @@ def get_fundamentals(stock_id: int) -> Optional[Dict]:
         """, (stock_id,))
         row = cur.fetchone()
         return dict(row) if row else None
+
+
+def has_fundamentals(stock_id: int) -> bool:
+    with get_cursor() as cur:
+        cur.execute("SELECT 1 FROM fundamentals WHERE stock_id = %s LIMIT 1", (stock_id,))
+        return cur.fetchone() is not None
+
+
+def recently_fetched(market_code: str, ticker: str, data_type: str, hours: int = 24) -> bool:
+    """True if a completed fetch for this (market, ticker, type) succeeded within N hours."""
+    with get_cursor() as cur:
+        cur.execute("""
+            SELECT 1 FROM download_queue
+            WHERE market_code = %s AND ticker = %s AND data_type = %s
+              AND status = 'completed'
+              AND completed_at > NOW() - (%s || ' hours')::interval
+            LIMIT 1
+        """, (market_code, ticker, data_type, hours))
+        return cur.fetchone() is not None
 
 
 # ---------------------------------------------------------------- queue
