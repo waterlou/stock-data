@@ -30,10 +30,15 @@ def process_queue_item(item: dict):
             raise RuntimeError(f"No intraday source for {market}")
         window = INTRADAY_WINDOW_DAYS.get(interval, 60)
         start = date.today() - timedelta(days=window)
-        bars = source.fetch_intraday(ticker, interval, start, date.today())
-        for b in bars:
-            b.stock_id = stock_id
-        queries.upsert_intraday_bars(bars)
+        try:
+            bars = source.fetch_intraday(ticker, interval, start, date.today())
+            for b in bars:
+                b.stock_id = stock_id
+            queries.upsert_intraday_bars(bars)
+            _ok(source.source_code, stock_id)
+        except Exception as e:
+            _fail(source.source_code, e)
+            raise
         return
 
     capability = CAPABILITY_BY_TYPE.get(data_type, "supports_history")
@@ -41,25 +46,39 @@ def process_queue_item(item: dict):
     if not source:
         raise RuntimeError(f"No source for {market}/{ticker} {data_type}")
 
-    if data_type == "price":
-        source = registry.best_source(market, "supports_history")
-        if not source:
-            raise RuntimeError(f"No history source for {market}")
-        prices = source.fetch_prices(ticker, FULL_HISTORY_FROM, date.today())
-        for p in prices:
-            p.stock_id = stock_id
-        queries.upsert_prices(prices)
-        batch._refresh_stock_dates(stock_id)
-    elif data_type == "corporate_actions":
-        actions = source.fetch_corporate_actions(ticker)
-        for a in actions:
-            a.stock_id = stock_id
-        queries.upsert_corporate_actions(actions)
-    elif data_type == "fundamentals":
-        f = source.fetch_fundamentals(ticker)
-        if f:
-            f.stock_id = stock_id
-            queries.upsert_fundamentals(f)
+    try:
+        if data_type == "price":
+            source = registry.best_source(market, "supports_history")
+            if not source:
+                raise RuntimeError(f"No history source for {market}")
+            prices = source.fetch_prices(ticker, FULL_HISTORY_FROM, date.today())
+            for p in prices:
+                p.stock_id = stock_id
+            queries.upsert_prices(prices)
+            batch._refresh_stock_dates(stock_id)
+        elif data_type == "corporate_actions":
+            actions = source.fetch_corporate_actions(ticker)
+            for a in actions:
+                a.stock_id = stock_id
+            queries.upsert_corporate_actions(actions)
+        elif data_type == "fundamentals":
+            f = source.fetch_fundamentals(ticker)
+            if f:
+                f.stock_id = stock_id
+                queries.upsert_fundamentals(f)
+        _ok(source.source_code, stock_id)
+    except Exception as e:
+        _fail(source.source_code, e)
+        raise
+
+
+def _ok(source_code: str, stock_id: int):
+    queries.record_source_success(source_code)
+    queries.mark_fetched(stock_id)
+
+
+def _fail(source_code: str, error: Exception):
+    queries.record_source_failure(source_code, str(error))
 
 
 def process_pending(poll_interval: int = 5):

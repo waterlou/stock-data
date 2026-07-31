@@ -15,7 +15,7 @@ docker compose up -d
 
 - **Batch jobs** — HK daily snapshot at 17:00 HKT (HKEX), US watchlist at 06:00 HKT (Yahoo)
 - **On-demand** — if the API finds data not in the database, it queues a fetch and returns `202`; retry in ~30s and the data is served from the DB cache
-- **Source priority** — per-market source ordering (`market_sources` table). HK: hkex → yahoo; US: yahoo
+- **Source priority** — per-market source ordering (`market_sources` table). HK: hkex → yahoo → tencent → aastocks → akshare; US: yahoo → akshare; CN: tencent → akshare. Sources with 3+ consecutive failures are skipped until they recover (health-check cron every 30 min).
 - **Ticker normalization** — all tickers stored in Yahoo format. `700`, `0700`, `00700`, `700.HK`, `00700.HK` all resolve to `0700.HK`; `aapl` → `AAPL`
 
 ## Watchlist
@@ -29,6 +29,8 @@ US batch downloads only track stocks on the watchlist. Manage via the **Watchlis
 | `GET /api/overview` | Dashboard stats |
 | `GET /api/markets` | Available markets (HK, US) |
 | `GET /api/sources` | Data sources + per-market priority |
+| `PATCH /api/sources/{market}/{source}` | Set `priority` and/or `enabled` for a source |
+| `GET /api/sources/health` | Source health (consecutive failures) |
 | `GET /api/stocks` | List stocks (`?search=`, `?market=`, `?watchlist=`) |
 | `GET /api/stocks/{ticker}/prices` | Daily OHLCV (`?from_date=`, `?to_date=`, or `?days=30` for last N trading days) — returns `202` if queued |
 | `GET /api/stocks/{ticker}/intraday` | Intraday bars (`?interval=5` for 5m bars, `?days=3`) — Yahoo only, retained 30 days |
@@ -54,3 +56,4 @@ Ticker params are forgiving: `0700.HK`, `00700.HK`, `700` all work.
 | `WORKER_POLL_INTERVAL` | `5` | On-demand queue poll interval (s) |
 | `INTRADAY_RETENTION_DAYS` | `30` | Intraday bars deleted after N days |
 | `INTRADAY_RECENCY_MINUTES` | `15` | Intraday re-fetch cooldown (min) |
+| `RATE_LIMIT_PER_MINUTE` | `120` | API rate limit per client |

@@ -1,20 +1,47 @@
 # Data Source Comparison
 
 Evaluation of candidate data source APIs for the stock data service. Current sources
-(HKEX, Yahoo, Tencent) are free and unlimited; the question is whether paid/other
-sources fill real gaps. Last evaluated: 2026-07.
+(HKEX, Yahoo, Tencent, AASTOCKS, AKShare) are free and unlimited; the question is
+whether paid/other sources fill real gaps. Last evaluated: 2026-07.
 
-## Overview
+## Implemented Sources
+
+| Source | Markets | Daily OHLCV | Intraday | Notes |
+|--------|---------|-------------|----------|-------|
+| HKEX | HK | ✅ whole market | ❌ | HTML scrape, bulk daily page |
+| Yahoo (yfinance) | HK, US | ✅ | ✅ 5m (55d) | Rate-limited |
+| Tencent | HK, CN | ✅ K-line qfq | ❌ | qfq ignored for HK (returns raw) |
+| AASTOCKS | HK | index snapshots | ❌ | HSI/HSCEI/CN indices; needs UA header |
+| AKShare (Sina) | HK, US, CN | ✅ qfq for HK/CN | ❌ | Heavy dep (pandas); US is raw |
+
+## Evaluated But Not Implemented
+
+| Source | Free tier | Verdict |
+|--------|-----------|---------|
+| **Tushare** | free with registration+points | CN-focused, requires token — deferred |
+| **EOD Historical Data** | 20 calls/day | $20/mo unlimited; 70+ exchanges — deferred (needs API key) |
+| **Tiingo** | 50 tickers, 500 calls/day | Best $10/mo all-round backup — deferred (needs API key) |
+| **Twelve Data** | 800 calls/day, US only | Best real-time WebSocket at $79/mo Pro — deferred (needs API key) |
+| **Alpha Vantage** | 25 calls/day | Skip — free tier unusable, no HK |
+| **Polygon.io** | 5 calls/min, US only | Skip — US only |
+| **Futu OpenAPI** | HK LV1/US LV3 free, 100 stocks/week | Good real-time push; needs OpenD gateway + account — deferred |
+
+## Overview (all evaluated)
 
 | Source | Free tier | Daily OHLCV | Intraday | HK | CN | Real-time |
 |--------|-----------|-------------|----------|----|----|-----------|
 | HKEX (have) | Unlimited | ✅ whole market | ❌ | ✅ | ❌ | ❌ |
 | Yahoo (have) | Unlimited | ✅ | ✅ 5m (55d) | ✅ | limited | delayed |
 | Tencent (have) | Unlimited | ✅ K-line qfq | ❌ | ✅ | ✅ | delayed |
+| AASTOCKS (have) | Unlimited | index snapshots | ❌ | ✅ | indices | delayed |
+| AKShare (have) | Unlimited | ✅ | ❌ | ✅ | ✅ | ❌ |
+| **Tushare** | free (token) | ✅ | ✅ | ✅ | ✅ | ❓ |
+| **EOD Historical Data** | 20 calls/day | ✅ | ✅ ($20/mo) | ✅ | ✅ | ❌ |
 | **Tiingo** | 50 tickers, 500 calls/day | ✅ | ✅ ($10/mo) | ✅ | ✅ | IEX ($) |
 | **Twelve Data** | 800 calls/day, US only | ✅ | ✅ ($29/mo) | ✅ ($79/mo) | ❓ | ✅ WS ($) |
 | **Alpha Vantage** | 25 calls/day | ✅ | ✅ | ❌ | ❌ | delayed |
 | **Polygon.io** | 5 calls/min, US only | ✅ | ✅ | ❌ | ❌ | ✅ ($199/mo) |
+| **Futu OpenAPI** | HK LV1/US LV3 free | ✅ (100/wk) | ✅ | ✅ | ⚠️ | ✅ |
 
 ## Polygon.io (rebranded Massive)
 

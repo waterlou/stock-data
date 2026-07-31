@@ -1,6 +1,7 @@
 import logging
 from typing import List, Optional
 
+from src.database import queries
 from src.database.connection import get_cursor
 from src.sources.base import DataSource
 
@@ -22,7 +23,7 @@ def get_all_sources() -> List[DataSource]:
 
 
 def enabled_sources_for(market: str) -> List[DataSource]:
-    """Enabled sources for a market, ordered by priority."""
+    """Enabled, healthy sources for a market, ordered by priority."""
     with get_cursor() as cur:
         cur.execute("""
             SELECT ms.source_code
@@ -32,8 +33,12 @@ def enabled_sources_for(market: str) -> List[DataSource]:
             ORDER BY ms.priority
         """, (market,))
         codes = [row[0] for row in cur.fetchall()]
-    result = [get_source(c) for c in codes]
-    return [s for s in result if s is not None]
+    result = []
+    for c in codes:
+        source = get_source(c)
+        if source is not None and not queries.is_source_unhealthy(c):
+            result.append(source)
+    return result
 
 
 def best_source(market: str, capability: str) -> Optional[DataSource]:

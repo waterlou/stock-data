@@ -118,3 +118,11 @@ def test_tencent_symbol_conversion():
     assert to_tencent("09988.HK") == "hk09988"
     assert to_tencent("600519.SH") == "sh600519"
     assert to_tencent("000001.SZ") == "sz000001"
+
+
+def test_akshare_symbol_conversion():
+    from src.sources.akshare import _to_akshare
+    assert _to_akshare("0700.HK") == "00700"
+    assert _to_akshare("600519.SH") == "sh600519"
+    assert _to_akshare("000001.SZ") == "sz000001"
+    assert _to_akshare("AAPL") == "AAPL"

@@ -4,7 +4,11 @@ from src.sources.registry import (
 from src.sources.hkex import HkexSource
 from src.sources.yahoo import YahooSource
 from src.sources.tencent import TencentSource
+from src.sources.aastocks import AastocksSource
+from src.sources.akshare import AkShareSource
 
 register_source(HkexSource())
 register_source(YahooSource())
 register_source(TencentSource())
+register_source(AastocksSource())
+register_source(AkShareSource())

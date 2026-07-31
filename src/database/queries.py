@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Dict, List, Optional, Tuple
 
@@ -25,7 +25,7 @@ def upsert_stock(market_code: str, ticker: str, name: str = "") -> int:
 def get_stock_by_ticker(market_code: str, ticker: str) -> Optional[Dict]:
     with get_cursor() as cur:
         cur.execute("""
-            SELECT id, market_code, ticker, name, watchlist, status, first_date, last_date, updated_at
+            SELECT id, market_code, ticker, name, watchlist, status, first_date, last_date, last_fetched_at, updated_at
             FROM stocks WHERE market_code = %s AND ticker = %s
         """, (market_code, ticker))
         row = cur.fetchone()
@@ -35,7 +35,7 @@ def get_stock_by_ticker(market_code: str, ticker: str) -> Optional[Dict]:
 def get_stock_by_id(stock_id: int) -> Optional[Dict]:
     with get_cursor() as cur:
         cur.execute("""
-            SELECT id, market_code, ticker, name, watchlist, status, first_date, last_date, updated_at
+            SELECT id, market_code, ticker, name, watchlist, status, first_date, last_date, last_fetched_at, updated_at
             FROM stocks WHERE id = %s
         """, (stock_id,))
         row = cur.fetchone()
@@ -60,7 +60,7 @@ def get_stocks(search: str = "", market: str = "", watchlist: bool = None,
     where = " AND ".join(conditions) if conditions else "TRUE"
     with get_cursor() as cur:
         cur.execute(f"""
-            SELECT id, market_code, ticker, name, watchlist, status, first_date, last_date, updated_at
+            SELECT id, market_code, ticker, name, watchlist, status, first_date, last_date, last_fetched_at, updated_at
             FROM stocks WHERE {where}
             ORDER BY ticker LIMIT %s OFFSET %s
         """, (*params, limit, offset))
@@ -73,6 +73,11 @@ def get_stocks(search: str = "", market: str = "", watchlist: bool = None,
 def update_stock_watchlist(stock_id: int, watchlist: bool):
     with get_cursor() as cur:
         cur.execute("UPDATE stocks SET watchlist = %s, updated_at = NOW() WHERE id = %s", (watchlist, stock_id))
+
+
+def mark_fetched(stock_id: int):
+    with get_cursor() as cur:
+        cur.execute("UPDATE stocks SET last_fetched_at = NOW() WHERE id = %s", (stock_id,))
 
 
 # ---------------------------------------------------------------- prices
@@ -373,6 +378,53 @@ def get_scan_logs(limit: int = 50, offset: int = 0) -> Tuple[List[Dict], int]:
     return rows, total
 
 
+# ---------------------------------------------------------------- source health
+
+FAILURE_THRESHOLD = 3
+
+
+def record_source_success(source_code: str):
+    with get_cursor() as cur:
+        cur.execute("""
+            INSERT INTO source_health (source_code, consecutive_failures, last_success_at, updated_at)
+            VALUES (%s, 0, NOW(), NOW())
+            ON CONFLICT (source_code) DO UPDATE SET
+                consecutive_failures = 0, last_success_at = NOW(), updated_at = NOW()
+        """, (source_code,))
+
+
+def record_source_failure(source_code: str, error: str = ""):
+    with get_cursor() as cur:
+        cur.execute("""
+            INSERT INTO source_health (source_code, consecutive_failures, last_failure_at, last_error, updated_at)
+            VALUES (%s, 1, NOW(), %s, NOW())
+            ON CONFLICT (source_code) DO UPDATE SET
+                consecutive_failures = source_health.consecutive_failures + 1,
+                last_failure_at = NOW(), last_error = %s, updated_at = NOW()
+        """, (source_code, error, error))
+
+
+def is_source_unhealthy(source_code: str) -> bool:
+    with get_cursor() as cur:
+        cur.execute("""
+            SELECT consecutive_failures >= %s FROM source_health WHERE source_code = %s
+        """, (FAILURE_THRESHOLD, source_code))
+        row = cur.fetchone()
+        return bool(row and row[0])
+
+
+def get_source_health() -> List[Dict]:
+    with get_cursor() as cur:
+        cur.execute("""
+            SELECT sh.source_code, ds.source_name, sh.consecutive_failures,
+                   sh.last_success_at, sh.last_failure_at, sh.last_error
+            FROM source_health sh
+            JOIN data_sources ds ON ds.source_code = sh.source_code
+            ORDER BY sh.consecutive_failures DESC, sh.source_code
+        """)
+        return [dict(r) for r in cur.fetchall()]
+
+
 # ---------------------------------------------------------------- intraday
 
 def upsert_intraday_bars(bars) -> int:
@@ -425,10 +477,38 @@ def has_intraday(stock_id: int, interval_min: int) -> bool:
         return cur.fetchone() is not None
 
 
-def cleanup_old_intraday(days: int = 30):
+def ensure_intraday_partitions(lookback_months: int = 1, lookahead_months: int = 2):
+    """Create monthly partitions for the intraday_prices table around the current month."""
+    today = date.today()
     with get_cursor() as cur:
-        cur.execute("DELETE FROM intraday_prices WHERE date_time < NOW() - INTERVAL '%s days'", (days,))
-        return cur.rowcount
+        for offset in range(-lookback_months, lookahead_months + 1):
+            month = _month_offset(today, offset)
+            name = f"intraday_prices_{month:%Y%m}"
+            start = month
+            end = _month_offset(month, 1)
+            cur.execute(f"""
+                CREATE TABLE IF NOT EXISTS {name} PARTITION OF intraday_prices
+                FOR VALUES FROM (%s) TO (%s)
+            """, (start, end))
+
+
+def cleanup_old_intraday(days: int = 30):
+    """Drop intraday partitions older than the retention window (instead of DELETE)."""
+    cutoff = date.today() - timedelta(days=days)
+    with get_cursor() as cur:
+        cur.execute("SELECT tablename FROM pg_tables WHERE tablename LIKE 'intraday_prices_%'")
+        for (name,) in cur.fetchall():
+            try:
+                month = datetime.strptime(name.split("_", 2)[2], "%Y%m").date()
+            except (ValueError, IndexError):
+                continue
+            if month < _month_offset(cutoff, -1):
+                cur.execute(f"DROP TABLE IF EXISTS {name}")
+
+
+def _month_offset(d: date, offset: int) -> date:
+    total = d.year * 12 + (d.month - 1) + offset
+    return date(total // 12, total % 12 + 1, 1)
 
 
 # ---------------------------------------------------------------- misc
@@ -448,6 +528,20 @@ def get_sources() -> List[Dict]:
             ORDER BY ds.source_code, ms.priority
         """)
         return [dict(r) for r in cur.fetchall()]
+
+
+def update_source(market_code: str, source_code: str, priority: Optional[int] = None,
+                  enabled: Optional[bool] = None) -> bool:
+    with get_cursor() as cur:
+        if priority is not None:
+            cur.execute("""
+                INSERT INTO market_sources (market_code, source_code, priority)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (market_code, source_code) DO UPDATE SET priority = EXCLUDED.priority
+            """, (market_code, source_code, priority))
+        if enabled is not None:
+            cur.execute("UPDATE data_sources SET enabled = %s WHERE source_code = %s", (enabled, source_code))
+        return cur.rowcount > 0 or priority is not None
 
 
 def get_dashboard_stats() -> Dict:

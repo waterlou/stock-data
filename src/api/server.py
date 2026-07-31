@@ -1,6 +1,8 @@
 import logging
 import os
 import threading
+import time
+from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import date, timedelta
 from decimal import Decimal
@@ -9,12 +11,13 @@ from typing import Optional
 import pytz
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-from fastapi import FastAPI, Query
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi import FastAPI, Query, Request
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 from src.config import (INTRADAY_RECENCY_MINUTES, INTRADAY_RETENTION_DAYS,
-                        SCRAPE_TIME_HK, SCRAPE_TIME_US, TZ, WORKER_POLL_INTERVAL)
+                        RATE_LIMIT_PER_MINUTE, SCRAPE_TIME_HK, SCRAPE_TIME_US,
+                        TZ, WORKER_POLL_INTERVAL)
 from src.database import queries
 from src.sources.normalizer import normalize_ticker, market_from_ticker
 from src.workers import batch, ondemand
@@ -41,6 +44,10 @@ def start_background():
         _scheduler.add_job(
             lambda: queries.cleanup_old_intraday(INTRADAY_RETENTION_DAYS),
             CronTrigger(hour=3), id="intraday_cleanup", name="Intraday retention cleanup")
+        _scheduler.add_job(queries.ensure_intraday_partitions, CronTrigger(hour=1),
+                           id="intraday_partitions", name="Ensure intraday partitions")
+        _scheduler.add_job(batch.run_source_health_check, CronTrigger(minute=30),
+                           id="source_health", name="Source health check")
         _scheduler.start()
         logger.info("Scheduler started (HK %s, US %s)", SCRAPE_TIME_HK, SCRAPE_TIME_US)
     if _worker_thread is None or not _worker_thread.is_alive():
@@ -62,6 +69,28 @@ async def lifespan(app):
 
 
 app = FastAPI(title="Stock Data API", version="2.0.0", lifespan=lifespan)
+
+# Simple per-client token bucket rate limiter
+_rate_buckets = {}
+_rate_lock = threading.Lock()
+
+
+@app.middleware("http")
+async def rate_limit(request: Request, call_next):
+    if request.url.path.startswith("/api/"):
+        client = request.client.host if request.client else "unknown"
+        now = time.monotonic()
+        with _rate_lock:
+            bucket = _rate_buckets.get(client)
+            if bucket is None:
+                bucket = _rate_buckets[client] = [RATE_LIMIT_PER_MINUTE, now]
+            bucket[0] = min(RATE_LIMIT_PER_MINUTE, bucket[0] + (now - bucket[1]) * RATE_LIMIT_PER_MINUTE / 60)
+            bucket[1] = now
+            if bucket[0] < 1:
+                return JSONResponse({"status": "rate_limited",
+                                     "message": "Too many requests. Try again shortly."}, status_code=429)
+            bucket[0] -= 1
+    return await call_next(request)
 
 
 def serialize(val):
@@ -108,6 +137,25 @@ def markets():
 @app.get("/api/sources")
 def sources():
     return {"sources": rows_to_json(queries.get_sources())}
+
+
+@app.get("/api/sources/health")
+def sources_health():
+    return {"health": rows_to_json(queries.get_source_health())}
+
+
+@app.patch("/api/sources/{market}/{source_code}")
+def update_source(market: str, source_code: str, body: dict):
+    priority = body.get("priority")
+    enabled = body.get("enabled")
+    if priority is None and enabled is None:
+        return {"error": "Provide priority and/or enabled"}, 400
+    if priority is not None and not (1 <= int(priority) <= 100):
+        return {"error": "priority must be 1-100"}, 400
+    queries.update_source(market, source_code,
+                          priority=int(priority) if priority is not None else None,
+                          enabled=bool(enabled) if enabled is not None else None)
+    return {"updated": True, "market": market, "source_code": source_code}
 
 
 @app.get("/api/stocks")

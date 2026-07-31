@@ -28,10 +28,12 @@ def run_hk_batch():
         data = source.fetch_bulk_daily(trade_date)
     except Exception as e:
         logger.error("HK bulk fetch failed: %s", e)
+        queries.record_source_failure(source.source_code, str(e))
         queries.log_scan("HK", source.source_code, "batch", "error", error_message=str(e))
         return
 
     inserted = _save_bulk("HK", data)
+    queries.record_source_success(source.source_code)
     queries.log_scan("HK", source.source_code, "batch", "success",
                      items_processed=len(data["prices"]), items_inserted=inserted)
     logger.info("HK batch done: %d prices inserted", inserted)
@@ -58,14 +60,43 @@ def run_us_stock(stock: dict, date_from: date = FULL_HISTORY_FROM, date_to: date
     if not source:
         logger.warning("No history source for US")
         return
-    prices = source.fetch_prices(stock["ticker"], date_from, date_to)
+    try:
+        prices = source.fetch_prices(stock["ticker"], date_from, date_to)
+        queries.record_source_success(source.source_code)
+    except Exception as e:
+        queries.record_source_failure(source.source_code, str(e))
+        raise
     if prices:
         for p in prices:
             p.stock_id = stock["id"]
         inserted = queries.upsert_prices(prices)
+        queries.mark_fetched(stock["id"])
         _refresh_stock_dates(stock["id"])
         return inserted
     return 0
+
+
+def run_source_health_check():
+    """Probe each registered source with a small known fetch; update health."""
+    probes = {"yahoo": ("US", "AAPL", "supports_history"),
+              "tencent": ("CN", "600519.SH", "supports_history"),
+              "akshare": ("CN", "600519.SH", "supports_history"),
+              "hkex": ("HK", "", "supports_bulk_daily"),
+              "aastocks": ("HK", "", "supports_bulk_daily")}
+    for code, (market, ticker, cap) in probes.items():
+        source = registry.get_source(code)
+        if not source:
+            continue
+        try:
+            if cap == "supports_bulk_daily":
+                source.fetch_bulk_daily(date.today())
+            else:
+                source.fetch_prices(ticker, date.today() - timedelta(days=5), date.today())
+            queries.record_source_success(code)
+            logger.info("Health check %s: OK", code)
+        except Exception as e:
+            queries.record_source_failure(code, str(e))
+            logger.warning("Health check %s: FAIL (%s)", code, e)
 
 
 def _save_bulk(market: str, data: dict) -> int:
@@ -78,6 +109,7 @@ def _save_bulk(market: str, data: dict) -> int:
     inserted += queries.upsert_short_selling(data["short_selling"])
     queries.upsert_indices(data.get("indices", []))
     for stock_id in {p.stock_id for p in data["prices"]}:
+        queries.mark_fetched(stock_id)
         _refresh_stock_dates(stock_id)
     return inserted
 

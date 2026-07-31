@@ -23,15 +23,16 @@ CREATE TABLE IF NOT EXISTS market_sources (
 
 -- Stocks (canonical ticker is Yahoo format: 0700.HK, AAPL)
 CREATE TABLE IF NOT EXISTS stocks (
-    id         SERIAL PRIMARY KEY,
-    market_code VARCHAR(10) NOT NULL REFERENCES markets(market_code),
-    ticker     VARCHAR(20) NOT NULL,
-    name       VARCHAR(500),
-    watchlist  BOOLEAN DEFAULT FALSE,
-    status     VARCHAR(20) DEFAULT 'active',
-    first_date DATE,
-    last_date  DATE,
-    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    id             SERIAL PRIMARY KEY,
+    market_code    VARCHAR(10) NOT NULL REFERENCES markets(market_code),
+    ticker         VARCHAR(20) NOT NULL,
+    name           VARCHAR(500),
+    watchlist      BOOLEAN DEFAULT FALSE,
+    status         VARCHAR(20) DEFAULT 'active',
+    first_date     DATE,
+    last_date      DATE,
+    last_fetched_at TIMESTAMPTZ,
+    updated_at     TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE (market_code, ticker)
 );
 
@@ -110,7 +111,7 @@ CREATE TABLE IF NOT EXISTS fundamentals (
     PRIMARY KEY (stock_id, report_date, source_code)
 );
 
--- Intraday OHLCV bars (5m default, on-demand)
+-- Intraday OHLCV bars (5m default, on-demand) - partitioned by month
 CREATE TABLE IF NOT EXISTS intraday_prices (
     date_time    TIMESTAMPTZ NOT NULL,
     stock_id     INT NOT NULL REFERENCES stocks(id),
@@ -122,8 +123,18 @@ CREATE TABLE IF NOT EXISTS intraday_prices (
     close        NUMERIC,
     volume       BIGINT,
     PRIMARY KEY (date_time, stock_id, interval_min)
-);
+) PARTITION BY RANGE (date_time);
 CREATE INDEX IF NOT EXISTS idx_intraday_stock ON intraday_prices (stock_id, interval_min, date_time);
+
+-- Source health tracking (consecutive failures mark a source unhealthy)
+CREATE TABLE IF NOT EXISTS source_health (
+    source_code         VARCHAR(20) PRIMARY KEY REFERENCES data_sources(source_code),
+    consecutive_failures INT DEFAULT 0,
+    last_success_at     TIMESTAMPTZ,
+    last_failure_at     TIMESTAMPTZ,
+    last_error          TEXT,
+    updated_at          TIMESTAMPTZ DEFAULT NOW()
+);
 
 -- On-demand download queue
 CREATE TABLE IF NOT EXISTS download_queue (
@@ -166,13 +177,19 @@ ON CONFLICT (market_code) DO NOTHING;
 INSERT INTO data_sources (source_code, source_name) VALUES
     ('hkex', 'HKEX'),
     ('yahoo', 'Yahoo Finance'),
-    ('tencent', 'Tencent Finance')
+    ('tencent', 'Tencent Finance'),
+    ('aastocks', 'AASTOCKS'),
+    ('akshare', 'AKShare')
 ON CONFLICT (source_code) DO NOTHING;
 
 INSERT INTO market_sources (market_code, source_code, priority) VALUES
     ('HK', 'hkex', 1),
     ('HK', 'yahoo', 2),
     ('HK', 'tencent', 3),
+    ('HK', 'aastocks', 4),
+    ('HK', 'akshare', 5),
     ('US', 'yahoo', 1),
-    ('CN', 'tencent', 1)
+    ('US', 'akshare', 2),
+    ('CN', 'tencent', 1),
+    ('CN', 'akshare', 2)
 ON CONFLICT (market_code, source_code) DO NOTHING;
