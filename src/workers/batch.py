@@ -47,7 +47,12 @@ def run_us_batch():
         return
     for stock in rows:
         try:
-            run_us_stock(stock)
+            # Incremental: fetch only since the last stored date (with overlap
+            # buffer for adjustments); full history on first fetch.
+            date_from = FULL_HISTORY_FROM
+            if stock.get("last_date"):
+                date_from = stock["last_date"] - timedelta(days=10)
+            run_us_stock(stock, date_from)
         except Exception as e:
             logger.error("US batch failed for %s: %s", stock["ticker"], e)
     queries.log_scan("US", "yahoo", "batch", "success", items_processed=len(rows))

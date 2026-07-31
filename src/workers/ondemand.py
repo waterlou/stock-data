@@ -2,6 +2,7 @@ import logging
 import time
 from datetime import date, timedelta
 
+from src.config import INTRADAY_RETENTION_DAYS
 from src.database import queries
 from src.sources import registry
 from src.workers import batch
@@ -28,8 +29,11 @@ def process_queue_item(item: dict):
         source = registry.best_source(market, "supports_intraday")
         if not source:
             raise RuntimeError(f"No intraday source for {market}")
-        window = INTRADAY_WINDOW_DAYS.get(interval, 60)
+        # Fetch window must stay within the retention window, otherwise the
+        # insert targets a dropped partition and fails.
+        window = min(INTRADAY_WINDOW_DAYS.get(interval, 60), INTRADAY_RETENTION_DAYS)
         start = date.today() - timedelta(days=window)
+        queries.ensure_intraday_partitions()
         try:
             bars = source.fetch_intraday(ticker, interval, start, date.today())
             for b in bars:
@@ -83,6 +87,7 @@ def _fail(source_code: str, error: Exception):
 
 def process_pending(poll_interval: int = 5):
     while True:
+        queries.recover_stale_queue_items()
         item = queries.claim_queue_item("ondemand")
         if not item:
             time.sleep(poll_interval)

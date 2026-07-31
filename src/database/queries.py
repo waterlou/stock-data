@@ -90,9 +90,17 @@ def upsert_prices(prices: List[Price]) -> int:
             open, high, low, close, adj_close, volume, prev_close, bid, ask, currency)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (trade_date, stock_id) DO UPDATE SET
+            source_code = EXCLUDED.source_code,
+            open = COALESCE(EXCLUDED.open, daily_prices.open),
+            high = COALESCE(EXCLUDED.high, daily_prices.high),
+            low = COALESCE(EXCLUDED.low, daily_prices.low),
             close = COALESCE(EXCLUDED.close, daily_prices.close),
             adj_close = COALESCE(EXCLUDED.adj_close, daily_prices.adj_close),
-            source_code = EXCLUDED.source_code
+            volume = COALESCE(EXCLUDED.volume, daily_prices.volume),
+            prev_close = COALESCE(EXCLUDED.prev_close, daily_prices.prev_close),
+            bid = COALESCE(EXCLUDED.bid, daily_prices.bid),
+            ask = COALESCE(EXCLUDED.ask, daily_prices.ask),
+            currency = COALESCE(EXCLUDED.currency, daily_prices.currency)
     """
     with get_cursor() as cur:
         cur.executemany(sql, [
@@ -186,10 +194,14 @@ def upsert_indices(indices: List[MarketIndex]) -> int:
             open, high, low, close, change, change_pct, source_code)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (trade_date, market_code, index_code) DO UPDATE SET
+            source_code = EXCLUDED.source_code,
+            index_name = COALESCE(EXCLUDED.index_name, market_indices.index_name),
+            open = COALESCE(EXCLUDED.open, market_indices.open),
+            high = COALESCE(EXCLUDED.high, market_indices.high),
+            low = COALESCE(EXCLUDED.low, market_indices.low),
             close = COALESCE(EXCLUDED.close, market_indices.close),
             change = COALESCE(EXCLUDED.change, market_indices.change),
-            change_pct = COALESCE(EXCLUDED.change_pct, market_indices.change_pct),
-            source_code = EXCLUDED.source_code
+            change_pct = COALESCE(EXCLUDED.change_pct, market_indices.change_pct)
     """
     with get_cursor() as cur:
         cur.executemany(sql, [
@@ -295,12 +307,17 @@ def has_fundamentals(stock_id: int) -> bool:
 
 
 def recently_fetched(market_code: str, ticker: str, data_type: str, hours: float = 24) -> bool:
-    """True if a completed fetch for this (market, ticker, type) succeeded within N hours."""
+    """True if a fetch for this (market, ticker, type) was attempted within N hours.
+
+    Counts both completed and failed items so a down source isn't re-hammered
+    on every request (backoff); failed items still gate re-enqueue until the
+    cooldown elapses.
+    """
     with get_cursor() as cur:
         cur.execute("""
             SELECT 1 FROM download_queue
             WHERE market_code = %s AND ticker = %s AND data_type = %s
-              AND status = 'completed'
+              AND status IN ('completed', 'failed')
               AND completed_at > NOW() - (%s || ' hours')::interval
             LIMIT 1
         """, (market_code, ticker, data_type, hours))
@@ -318,6 +335,17 @@ def enqueue(market_code: str, ticker: str, data_type: str) -> bool:
             ON CONFLICT DO NOTHING
         """, (market_code, ticker, data_type))
         return cur.rowcount > 0
+
+
+def recover_stale_queue_items(stale_minutes: int = 30) -> int:
+    """Reset 'processing' items stuck past the timeout back to 'pending' (crash recovery)."""
+    with get_cursor() as cur:
+        cur.execute("""
+            UPDATE download_queue SET status = 'pending'
+            WHERE status = 'processing'
+              AND started_at < NOW() - (%s || ' minutes')::interval
+        """, (stale_minutes,))
+        return cur.rowcount
 
 
 def claim_queue_item(worker_id: str) -> Optional[Dict]:
@@ -435,8 +463,12 @@ def upsert_intraday_bars(bars) -> int:
             open, high, low, close, volume)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (date_time, stock_id, interval_min) DO UPDATE SET
+            source_code = EXCLUDED.source_code,
+            open = COALESCE(EXCLUDED.open, intraday_prices.open),
+            high = COALESCE(EXCLUDED.high, intraday_prices.high),
+            low = COALESCE(EXCLUDED.low, intraday_prices.low),
             close = COALESCE(EXCLUDED.close, intraday_prices.close),
-            source_code = EXCLUDED.source_code
+            volume = COALESCE(EXCLUDED.volume, intraday_prices.volume)
     """
     with get_cursor() as cur:
         cur.executemany(sql, [
@@ -475,6 +507,14 @@ def has_intraday(stock_id: int, interval_min: int) -> bool:
             SELECT 1 FROM intraday_prices WHERE stock_id = %s AND interval_min = %s LIMIT 1
         """, (stock_id, interval_min))
         return cur.fetchone() is not None
+
+
+def latest_intraday_dt(stock_id: int, interval_min: int):
+    with get_cursor() as cur:
+        cur.execute("""
+            SELECT MAX(date_time) FROM intraday_prices WHERE stock_id = %s AND interval_min = %s
+        """, (stock_id, interval_min))
+        return cur.fetchone()[0]
 
 
 def ensure_intraday_partitions(lookback_months: int = 1, lookahead_months: int = 2):
@@ -517,6 +557,13 @@ def get_markets() -> List[Dict]:
     with get_cursor() as cur:
         cur.execute("SELECT market_code, market_name, currency, timezone FROM markets")
         return [dict(r) for r in cur.fetchall()]
+
+
+def get_market_timezone(market_code: str) -> str:
+    with get_cursor() as cur:
+        cur.execute("SELECT timezone FROM markets WHERE market_code = %s", (market_code,))
+        row = cur.fetchone()
+        return row[0] if row else "UTC"
 
 
 def get_sources() -> List[Dict]:

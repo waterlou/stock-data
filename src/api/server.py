@@ -4,21 +4,22 @@ import threading
 import time
 from collections import defaultdict
 from contextlib import asynccontextmanager
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Optional
 
 import pytz
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-from fastapi import FastAPI, Query, Request
+from fastapi import FastAPI, Query, Request, Header, Depends, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from src.config import (INTRADAY_RECENCY_MINUTES, INTRADAY_RETENTION_DAYS,
+from src.config import (API_KEY, INTRADAY_RECENCY_MINUTES, INTRADAY_RETENTION_DAYS,
                         RATE_LIMIT_PER_MINUTE, SCRAPE_TIME_HK, SCRAPE_TIME_US,
                         TZ, WORKER_POLL_INTERVAL)
 from src.database import queries
+from src.database.connection import init_database
 from src import formats
 from src.sources.normalizer import normalize_ticker, market_from_ticker
 from src.workers import batch, ondemand
@@ -34,6 +35,8 @@ _worker_thread = None
 
 def start_background():
     global _scheduler, _worker_thread
+    init_database()  # idempotent; ensures schema on fresh deploy
+    queries.ensure_intraday_partitions()
     if _scheduler is None:
         _scheduler = BackgroundScheduler(timezone=pytz.timezone(TZ))
         hh, mm = SCRAPE_TIME_HK.split(":")
@@ -70,6 +73,12 @@ async def lifespan(app):
 
 
 app = FastAPI(title="Stock Data API", version="2.0.0", lifespan=lifespan)
+
+
+def require_api_key(x_api_key: str = Header(default="")):
+    """Optional auth: if API_KEY is configured, mutating endpoints require it."""
+    if API_KEY and x_api_key != API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 # Simple per-client token bucket rate limiter
 _rate_buckets = {}
@@ -146,7 +155,7 @@ def sources_health():
 
 
 @app.patch("/api/sources/{market}/{source_code}")
-def update_source(market: str, source_code: str, body: dict):
+def update_source(market: str, source_code: str, body: dict, _: None = Depends(require_api_key)):
     priority = body.get("priority")
     enabled = body.get("enabled")
     if priority is None and enabled is None:
@@ -179,12 +188,12 @@ def watchlist(market: str = ""):
 
 
 @app.post("/api/watchlist")
-def add_to_watchlist(body: dict):
+def add_to_watchlist(body: dict, _: None = Depends(require_api_key)):
     tickers = body.get("tickers", [])
     market = body.get("market", "")
     added = []
     for t in tickers:
-        m = market or market_from_ticker(t) or "HK"
+        m = resolve_market(t, market)
         canonical = normalize_ticker(t, m)
         stock_id = queries.upsert_stock(m, canonical)
         queries.update_stock_watchlist(stock_id, True)
@@ -193,7 +202,7 @@ def add_to_watchlist(body: dict):
 
 
 @app.delete("/api/watchlist/{ticker}")
-def remove_from_watchlist(ticker: str, market: str = ""):
+def remove_from_watchlist(ticker: str, market: str = "", _: None = Depends(require_api_key)):
     stock = resolve_stock(ticker, market)
     if not stock:
         return {"removed": False}
@@ -202,7 +211,7 @@ def remove_from_watchlist(ticker: str, market: str = ""):
 
 
 @app.post("/api/watchlist/import")
-def import_watchlist(body: dict):
+def import_watchlist(body: dict, _: None = Depends(require_api_key)):
     text = body.get("text", "")
     market = body.get("market", "")
     added = []
@@ -214,7 +223,7 @@ def import_watchlist(body: dict):
         t = parts[0].strip()
         if not t:
             continue
-        m = market or market_from_ticker(t) or "HK"
+        m = resolve_market(t, market)
         try:
             canonical = normalize_ticker(t, m)
         except ValueError:
@@ -287,19 +296,23 @@ def stock_intraday(
         return {"status": "queued", "message": "Intraday data is being fetched."}, 202
 
     recency_hours = INTRADAY_RECENCY_MINUTES / 60
-    if not queries.has_intraday(stock["id"], interval) and not queries.recently_fetched(
+    latest = queries.latest_intraday_dt(stock["id"], interval)
+    stale = latest is None or latest < datetime.now(pytz.utc) - timedelta(minutes=INTRADAY_RECENCY_MINUTES)
+    if stale and not queries.recently_fetched(
             stock["market_code"], stock["ticker"], data_type, hours=recency_hours):
         queries.enqueue(stock["market_code"], stock["ticker"], data_type)
         return {"status": "queued", "message": "Intraday data is being fetched."}, 202
 
     from_date = date.today() - timedelta(days=days - 1)
     rows, total = queries.get_intraday_bars(stock["id"], interval, from_date, None, limit, offset)
-    if format == "lean_hybrid":
-        zip_data = formats.lean_hybrid_intraday_zip(rows, stock["ticker"])
-        return Response(content=zip_data, media_type="application/zip",
-                        headers={"Content-Disposition": f'attachment; filename="{stock["ticker"]}.zip"'})
-    if format == "lean":
-        zip_data = formats.lean_intraday_zip(rows, stock["ticker"])
+    if format in ("lean", "lean_hybrid"):
+        tz = pytz.timezone(queries.get_market_timezone(stock["market_code"]))
+        for r in rows:
+            r["date_time"] = r["date_time"].astimezone(tz)
+        if format == "lean_hybrid":
+            zip_data = formats.lean_hybrid_intraday_zip(rows, stock["ticker"])
+        else:
+            zip_data = formats.lean_intraday_zip(rows, stock["ticker"])
         return Response(content=zip_data, media_type="application/zip",
                         headers={"Content-Disposition": f'attachment; filename="{stock["ticker"]}.zip"'})
     return {"bars": rows_to_json(rows), "total": total}
