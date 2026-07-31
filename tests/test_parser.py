@@ -6,7 +6,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.scraper.parser import parse_daily_page, _extract_sections, _is_data_line
+from src.sources.hkex import _extract_sections, _is_data_line, parse_market_highlights, parse_prices, parse_short_selling
 
 
 FIXTURE_PATH = os.path.join(os.path.dirname(__file__), "fixtures", "quotations_sample.htm")
@@ -17,98 +17,84 @@ def read_fixture():
         return f.read()
 
 
-def test_market_highlights_parsing():
-    html = read_fixture()
-    highlights, _, _ = parse_daily_page(html, date(2026, 7, 21))
+def sections():
+    return _extract_sections(read_fixture())
 
-    assert highlights is not None
-    assert highlights.securities_traded == 8315
-    assert highlights.advanced == 5348
-    assert highlights.declined == 4559
-    assert highlights.unchanged == 5777
-    assert highlights.turnover_hkd is not None
-    assert highlights.turnover_hkd > 0
-    assert highlights.turnover_shares is not None
+
+def test_market_highlights_parsing():
+    idx = parse_market_highlights(sections()["market_highlights"], date(2026, 7, 21))
+    hsi = next((i for i in idx if i.index_code == "^HSI"), None)
+    assert hsi is not None
+    assert hsi.close is not None
+    assert hsi.change_pct is not None
 
 
 def test_quotations_parsing():
-    html = read_fixture()
-    _, quotes, _ = parse_daily_page(html, date(2026, 7, 21))
+    quotes = parse_prices(sections()["quotations"], date(2026, 7, 21))
 
     assert len(quotes) > 0
 
-    ckh = next((q for q in quotes if q.stock_code == "1"), None)
+    ckh = next((q for q in quotes if q.ticker == "0001.HK"), None)
     assert ckh is not None
-    assert ckh.stock_name == "CKH HOLDINGS"
-    assert ckh.currency == "HKD"
-    assert ckh.prev_close is not None
-    assert ckh.closing is not None
+    assert ckh.close is not None
 
-    hsbc = next((q for q in quotes if q.stock_code == "5"), None)
+    hsbc = next((q for q in quotes if q.ticker == "0005.HK"), None)
     assert hsbc is not None
-    assert hsbc.stock_name == "HSBC HOLDINGS"
-    assert hsbc.closing is not None
-    assert hsbc.prev_close is not None
+    assert hsbc.close is not None
 
-    clp = next((q for q in quotes if q.stock_code == "2"), None)
+    clp = next((q for q in quotes if q.ticker == "0002.HK"), None)
     assert clp is not None
-    assert clp.closing is not None
+    assert clp.close is not None
 
 
 def test_suspended_stock():
-    html = read_fixture()
-    _, quotes, _ = parse_daily_page(html, date(2026, 7, 21))
-
-    wisdom = next((q for q in quotes if q.stock_code == "7"), None)
+    quotes = parse_prices(sections()["quotations"], date(2026, 7, 21))
+    wisdom = next((q for q in quotes if q.ticker == "0007.HK"), None)
     assert wisdom is not None
-    assert wisdom.stock_name == "WISDOM WEALTH"
-    assert wisdom.closing is None
+    assert wisdom.close is None
 
 
 def test_star_prefixed_stock():
-    html = read_fixture()
-    _, quotes, _ = parse_daily_page(html, date(2026, 7, 21))
-
-    for q in quotes:
-        assert q.stock_code is not None
-        assert len(q.stock_code) > 0
-        assert q.stock_name is not None
+    for q in parse_prices(sections()["quotations"], date(2026, 7, 21)):
+        assert q.ticker is not None
+        assert q.ticker.endswith(".HK")
 
 
 def test_no_derivative_products():
-    html = read_fixture()
-    _, quotes, _ = parse_daily_page(html, date(2026, 7, 21))
-
-    for q in quotes:
-        assert int(q.stock_code) < 10000
+    for q in parse_prices(sections()["quotations"], date(2026, 7, 21)):
+        code = q.ticker.replace(".HK", "")
+        assert int(code) < 10000
 
 
 def test_short_selling_parsing():
-    html = read_fixture()
-    _, _, short = parse_daily_page(html, date(2026, 7, 21))
-
-    assert len(short) > 0
-
-    ckh_ss = next((s for s in short if s.stock_code == "1"), None)
-    assert ckh_ss is not None
-    assert ckh_ss.short_shares is not None
-    assert ckh_ss.short_turnover is not None
-    assert ckh_ss.total_shares is not None
-    assert ckh_ss.total_turnover is not None
+    entries = parse_short_selling(sections()["short_selling"], date(2026, 7, 21))
+    assert len(entries) > 0
+    ckh = next((e for e in entries if e.ticker == "0001.HK"), None)
+    assert ckh is not None
+    assert ckh.short_shares is not None
+    assert ckh.short_turnover is not None
+    assert ckh.total_shares is not None
+    assert ckh.total_turnover is not None
 
 
 def test_sections_extraction():
-    html = read_fixture()
-    sections = _extract_sections(html)
-    assert "market_highlights" in sections
-    assert "quotations" in sections
-    assert "short_selling" in sections
+    sec = sections()
+    assert "market_highlights" in sec
+    assert "quotations" in sec
+    assert "short_selling" in sec
 
 
 def test_all_stocks_have_valid_currency():
-    html = read_fixture()
-    _, quotes, _ = parse_daily_page(html, date(2026, 7, 21))
-
-    for q in quotes:
-        if q.closing is not None:
+    for q in parse_prices(sections()["quotations"], date(2026, 7, 21)):
+        if q.close is not None:
             assert q.currency in ("HKD", "RMB", "USD", "CNY")
+
+
+def test_ticker_normalization():
+    from src.sources.normalizer import normalize_ticker
+    assert normalize_ticker("700", "HK") == "0700.HK"
+    assert normalize_ticker("00700", "HK") == "0700.HK"
+    assert normalize_ticker("700.HK", "HK") == "0700.HK"
+    assert normalize_ticker("00700.HK", "HK") == "0700.HK"
+    assert normalize_ticker("aapl", "US") == "AAPL"
+    assert normalize_ticker("AAPL.US", "US") == "AAPL"

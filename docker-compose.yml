@@ -16,25 +16,14 @@ services:
       timeout: 5s
       retries: 5
 
-  scraper:
+  app:
     build: .
-    environment:
-      DATABASE_URL: postgresql://hkex:hkex@postgres:5432/hkex
-      SCRAPE_TIME: "17:00"
-      TZ: Asia/Hong_Kong
-      LOG_LEVEL: INFO
-    depends_on:
-      postgres:
-        condition: service_healthy
-    restart: unless-stopped
-
-  web:
-    build: .
-    command: uvicorn src.api.server:app --host 0.0.0.0 --port 8000
     ports:
       - "8000:8000"
     environment:
       DATABASE_URL: postgresql://hkex:hkex@postgres:5432/hkex
+      SCRAPE_TIME_HK: "17:00"
+      SCRAPE_TIME_US: "06:00"
       TZ: Asia/Hong_Kong
       LOG_LEVEL: INFO
     depends_on:

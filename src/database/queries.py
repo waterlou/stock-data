@@ -1,387 +1,388 @@
 from datetime import date
 from decimal import Decimal
-from typing import List, Optional, Dict
+from typing import Dict, List, Optional, Tuple
 
 from src.database.connection import get_cursor
-from src.models.schemas import StockQuote, MarketHighlight, ShortSelling, CorporateAction, AdjustedQuote
+from src.models import CorporateAction, Fundamentals, MarketIndex, Price, ShortSelling
 
 
-def upsert_daily_quotations(quotes: List[StockQuote]) -> int:
-    if not quotes:
+# ---------------------------------------------------------------- stocks
+
+def upsert_stock(market_code: str, ticker: str, name: str = "") -> int:
+    """Insert or update a stock; returns its id."""
+    with get_cursor() as cur:
+        cur.execute("""
+            INSERT INTO stocks (market_code, ticker, name, updated_at)
+            VALUES (%s, %s, %s, NOW())
+            ON CONFLICT (market_code, ticker) DO UPDATE SET
+                name = COALESCE(NULLIF(%s, ''), stocks.name),
+                updated_at = NOW()
+            RETURNING id
+        """, (market_code, ticker, name, name))
+        return cur.fetchone()[0]
+
+
+def get_stock_by_ticker(market_code: str, ticker: str) -> Optional[Dict]:
+    with get_cursor() as cur:
+        cur.execute("""
+            SELECT id, market_code, ticker, name, watchlist, status, first_date, last_date, updated_at
+            FROM stocks WHERE market_code = %s AND ticker = %s
+        """, (market_code, ticker))
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+
+def get_stock_by_id(stock_id: int) -> Optional[Dict]:
+    with get_cursor() as cur:
+        cur.execute("""
+            SELECT id, market_code, ticker, name, watchlist, status, first_date, last_date, updated_at
+            FROM stocks WHERE id = %s
+        """, (stock_id,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+
+def get_stocks(search: str = "", market: str = "", watchlist: bool = None,
+               status: str = "", limit: int = 100, offset: int = 0) -> Tuple[List[Dict], int]:
+    conditions, params = [], []
+    if search:
+        conditions.append("(ticker ILIKE %s OR name ILIKE %s)")
+        params += [f"%{search}%", f"%{search}%"]
+    if market:
+        conditions.append("market_code = %s")
+        params.append(market)
+    if watchlist is not None:
+        conditions.append("watchlist = %s")
+        params.append(watchlist)
+    if status:
+        conditions.append("status = %s")
+        params.append(status)
+    where = " AND ".join(conditions) if conditions else "TRUE"
+    with get_cursor() as cur:
+        cur.execute(f"""
+            SELECT id, market_code, ticker, name, watchlist, status, first_date, last_date, updated_at
+            FROM stocks WHERE {where}
+            ORDER BY ticker LIMIT %s OFFSET %s
+        """, (*params, limit, offset))
+        rows = [dict(r) for r in cur.fetchall()]
+        cur.execute(f"SELECT COUNT(*) FROM stocks WHERE {where}", params)
+        total = cur.fetchone()[0]
+    return rows, total
+
+
+def update_stock_watchlist(stock_id: int, watchlist: bool):
+    with get_cursor() as cur:
+        cur.execute("UPDATE stocks SET watchlist = %s, updated_at = NOW() WHERE id = %s", (watchlist, stock_id))
+
+
+# ---------------------------------------------------------------- prices
+
+def upsert_prices(prices: List[Price]) -> int:
+    if not prices:
         return 0
     sql = """
-        INSERT INTO daily_quotations (trade_date, stock_code, stock_name, currency,
-            prev_close, closing, ask, bid, high, low, shares_traded, turnover)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (trade_date, stock_code) DO NOTHING
+        INSERT INTO daily_prices (trade_date, stock_id, source_code,
+            open, high, low, close, adj_close, volume, prev_close, bid, ask, currency)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (trade_date, stock_id) DO UPDATE SET
+            close = COALESCE(EXCLUDED.close, daily_prices.close),
+            adj_close = COALESCE(EXCLUDED.adj_close, daily_prices.adj_close),
+            source_code = EXCLUDED.source_code
     """
     with get_cursor() as cur:
         cur.executemany(sql, [
-            (q.trade_date, q.stock_code, q.stock_name, q.currency,
-             q.prev_close, q.closing, q.ask, q.bid, q.high, q.low,
-             q.shares_traded, q.turnover)
-            for q in quotes
+            (p.trade_date, p.stock_id, p.source_code, p.open, p.high, p.low,
+             p.close, p.adj_close, p.volume, p.prev_close, p.bid, p.ask, p.currency)
+            for p in prices
         ])
         return cur.rowcount
 
 
-def upsert_market_highlights(highlight: MarketHighlight) -> bool:
-    sql = """
-        INSERT INTO market_highlights (trade_date, hsi_close, hsi_change, hsi_change_pct,
-            hscei_close, hscei_change, hscei_change_pct,
-            hscci_close, hscci_change, hscci_change_pct,
-            sphkex_largecap_close, sphkex_largecap_change, sphkex_largecap_change_pct,
-            securities_traded, advanced, declined, unchanged,
-            turnover_hkd, turnover_shares, turnover_deals, rmb_turnover)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (trade_date) DO NOTHING
-    """
+def get_prices(stock_id: int, from_date: Optional[date] = None,
+               to_date: Optional[date] = None, limit: int = 100, offset: int = 0) -> Tuple[List[Dict], int]:
+    conditions, params = ["stock_id = %s"], [stock_id]
+    if from_date:
+        conditions.append("trade_date >= %s")
+        params.append(from_date)
+    if to_date:
+        conditions.append("trade_date <= %s")
+        params.append(to_date)
+    where = " AND ".join(conditions)
     with get_cursor() as cur:
-        cur.execute(sql, (
-            highlight.trade_date,
-            highlight.hsi_close, highlight.hsi_change, highlight.hsi_change_pct,
-            highlight.hscei_close, highlight.hscei_change, highlight.hscei_change_pct,
-            highlight.hscci_close, highlight.hscci_change, highlight.hscci_change_pct,
-            highlight.sphkex_largecap_close, highlight.sphkex_largecap_change, highlight.sphkex_largecap_change_pct,
-            highlight.securities_traded, highlight.advanced, highlight.declined, highlight.unchanged,
-            highlight.turnover_hkd, highlight.turnover_shares, highlight.turnover_deals, highlight.rmb_turnover,
-        ))
-        return cur.rowcount > 0
+        cur.execute(f"""
+            SELECT trade_date, stock_id, source_code, open, high, low, close, adj_close,
+                   volume, prev_close, bid, ask, currency
+            FROM daily_prices WHERE {where}
+            ORDER BY trade_date DESC LIMIT %s OFFSET %s
+        """, (*params, limit, offset))
+        rows = [dict(r) for r in cur.fetchall()]
+        cur.execute(f"SELECT COUNT(*) FROM daily_prices WHERE {where}", params)
+        total = cur.fetchone()[0]
+    return rows, total
 
+
+def has_prices(stock_id: int) -> bool:
+    with get_cursor() as cur:
+        cur.execute("SELECT 1 FROM daily_prices WHERE stock_id = %s LIMIT 1", (stock_id,))
+        return cur.fetchone() is not None
+
+
+# ---------------------------------------------------------------- short selling
 
 def upsert_short_selling(entries: List[ShortSelling]) -> int:
     if not entries:
         return 0
     sql = """
-        INSERT INTO short_selling (trade_date, stock_code, stock_name,
+        INSERT INTO short_selling (trade_date, stock_id, source_code,
             short_shares, short_turnover, total_shares, total_turnover)
         VALUES (%s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (trade_date, stock_code) DO NOTHING
+        ON CONFLICT (trade_date, stock_id) DO NOTHING
     """
     with get_cursor() as cur:
         cur.executemany(sql, [
-            (s.trade_date, s.stock_code, s.stock_name,
-             s.short_shares, s.short_turnover, s.total_shares, s.total_turnover)
-            for s in entries
+            (e.trade_date, e.stock_id, e.source_code,
+             e.short_shares, e.short_turnover, e.total_shares, e.total_turnover)
+            for e in entries
         ])
         return cur.rowcount
 
 
-def has_data_for_date(trade_date: date) -> bool:
-    with get_cursor() as cur:
-        cur.execute("SELECT 1 FROM market_highlights WHERE trade_date = %s", (trade_date,))
-        return cur.fetchone() is not None
-
-
-def upsert_stock_master(stock_code: str, stock_name: str, trade_date: date):
-    sql = """
-        INSERT INTO stock_master (stock_code, stock_name, first_trade_date, last_trade_date, status)
-        VALUES (%s, %s, %s, %s, 'active')
-        ON CONFLICT (stock_code) DO UPDATE SET
-            last_trade_date = GREATEST(stock_master.last_trade_date, %s),
-            stock_name = %s,
-            updated_at = NOW()
-    """
-    with get_cursor() as cur:
-        cur.execute(sql, (stock_code, stock_name, trade_date, trade_date, trade_date, stock_name))
-
-
-def update_stock_name_history(stock_code: str, stock_name: str, trade_date: date):
-    sql = """
-        INSERT INTO stock_name_history (stock_code, stock_name, first_seen_date, last_seen_date)
-        VALUES (%s, %s, %s, %s)
-        ON CONFLICT (stock_code, first_seen_date) DO UPDATE SET
-            last_seen_date = GREATEST(stock_name_history.last_seen_date, %s)
-    """
-    with get_cursor() as cur:
-        cur.execute(sql, (stock_code, stock_name, trade_date, trade_date, trade_date))
-
-
-def detect_delisted_stocks(trade_date: date, active_codes: set):
-    with get_cursor() as cur:
-        cur.execute("""
-            SELECT stock_code FROM stock_master
-            WHERE status = 'active' AND last_trade_date < %s - INTERVAL '10 days'
-        """, (trade_date,))
-        inactive = {row[0] for row in cur.fetchall()}
-    newly_delisted = inactive - active_codes
-    if newly_delisted:
-        with get_cursor() as cur:
-            cur.execute("""
-                UPDATE stock_master SET status = 'delisted', updated_at = NOW()
-                WHERE stock_code = ANY(%s)
-            """, (list(newly_delisted),))
-
-
-def upsert_corporate_actions(actions: List[CorporateAction]) -> int:
-    if not actions:
-        return 0
-    sql = """
-        INSERT INTO corporate_actions (stock_code, action_date, action_type, split_ratio, dividend_amount, source)
-        VALUES (%s, %s, %s, %s, %s, %s)
-        ON CONFLICT (stock_code, action_date, action_type) DO NOTHING
-    """
-    with get_cursor() as cur:
-        cur.executemany(sql, [
-            (a.stock_code, a.action_date, a.action_type, a.split_ratio, a.dividend_amount, a.source)
-            for a in actions
-        ])
-        return cur.rowcount
-
-
-def get_all_quotations_for_stock(stock_code: str) -> List[Dict]:
-    with get_cursor() as cur:
-        cur.execute("""
-            SELECT trade_date, closing, high, low,
-                   COALESCE(LAG(closing) OVER (ORDER BY trade_date), closing) AS opening,
-                   shares_traded
-            FROM daily_quotations
-            WHERE stock_code = %s
-            ORDER BY trade_date
-        """, (stock_code,))
-        return [dict(row) for row in cur.fetchall()]
-
-
-def get_corporate_actions_for_stock(stock_code: str) -> List[CorporateAction]:
-    with get_cursor() as cur:
-        cur.execute("""
-            SELECT stock_code, action_date, action_type, split_ratio, dividend_amount, source
-            FROM corporate_actions
-            WHERE stock_code = %s
-            ORDER BY action_date
-        """, (stock_code,))
-        return [
-            CorporateAction(
-                stock_code=row["stock_code"],
-                action_date=row["action_date"],
-                action_type=row["action_type"],
-                split_ratio=float(row["split_ratio"]) if row["split_ratio"] else None,
-                dividend_amount=float(row["dividend_amount"]) if row["dividend_amount"] else None,
-                source=row["source"],
-            )
-            for row in cur.fetchall()
-        ]
-
-
-def upsert_adjusted_quotations(adjusted: List[AdjustedQuote]) -> int:
-    if not adjusted:
-        return 0
-    sql = """
-        INSERT INTO daily_quotations_adjusted (trade_date, stock_code,
-            adj_open, adj_high, adj_low, adj_close, adj_volume, adjustment_factor)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (trade_date, stock_code) DO NOTHING
-    """
-    with get_cursor() as cur:
-        cur.executemany(sql, [
-            (a.trade_date, a.stock_code, a.adj_open, a.adj_high, a.adj_low,
-             a.adj_close, a.adj_volume, a.adjustment_factor)
-            for a in adjusted
-        ])
-        return cur.rowcount
-
-
-def log_scrape(trade_date: date, section: str, status: str, rows_inserted: int = 0, error_message: str = None):
-    with get_cursor() as cur:
-        cur.execute("""
-            INSERT INTO scrape_log (trade_date, section, status, rows_inserted, error_message, completed_at)
-            VALUES (%s, %s, %s, %s, %s, NOW())
-        """, (trade_date, section, status, rows_inserted, error_message))
-
-
-def get_stocks(search: str = "", status: str = "active", limit: int = 100, offset: int = 0) -> tuple:
-    sql = """
-        SELECT stock_code, stock_name, first_trade_date, last_trade_date, status, updated_at
-        FROM stock_master
-        WHERE (%s = '' OR stock_code ILIKE %s OR stock_name ILIKE %s)
-        AND (%s = '' OR status = %s)
-        ORDER BY stock_code
-        LIMIT %s OFFSET %s
-    """
-    search_pattern = f"%{search}%"
-    with get_cursor() as cur:
-        cur.execute(sql, (search, search_pattern, search_pattern, status, status, limit, offset))
-        rows = [dict(row) for row in cur.fetchall()]
-        cur.execute("""
-            SELECT COUNT(*) FROM stock_master
-            WHERE (%s = '' OR stock_code ILIKE %s OR stock_name ILIKE %s)
-            AND (%s = '' OR status = %s)
-        """, (search, search_pattern, search_pattern, status, status))
-        total = cur.fetchone()[0]
-    return rows, total
-
-
-def get_stock_by_code(stock_code: str) -> Optional[Dict]:
-    with get_cursor() as cur:
-        cur.execute("""
-            SELECT stock_code, stock_name, first_trade_date, last_trade_date, status, updated_at
-            FROM stock_master WHERE stock_code = %s
-        """, (stock_code,))
-        row = cur.fetchone()
-        return dict(row) if row else None
-
-
-def get_quotations(stock_code: str, from_date: Optional[date] = None,
-                   to_date: Optional[date] = None, limit: int = 100, offset: int = 0) -> tuple:
-    conditions = ["stock_code = %s"]
-    params = [stock_code]
-    if from_date:
-        conditions.append("trade_date >= %s")
-        params.append(from_date)
-    if to_date:
-        conditions.append("trade_date <= %s")
-        params.append(to_date)
-    where = " AND ".join(conditions)
-    with get_cursor() as cur:
-        cur.execute(f"""
-            SELECT trade_date, stock_code, stock_name, currency, prev_close,
-                   closing, ask, bid, high, low, shares_traded, turnover
-            FROM daily_quotations
-            WHERE {where}
-            ORDER BY trade_date DESC
-            LIMIT %s OFFSET %s
-        """, (*params, limit, offset))
-        rows = [dict(row) for row in cur.fetchall()]
-        cur.execute(f"""
-            SELECT COUNT(*) FROM daily_quotations WHERE {where}
-        """, params)
-        total = cur.fetchone()[0]
-    return rows, total
-
-
-def get_adjusted_quotations(stock_code: str, from_date: Optional[date] = None,
-                            to_date: Optional[date] = None, limit: int = 100, offset: int = 0) -> tuple:
-    conditions = ["stock_code = %s"]
-    params = [stock_code]
-    if from_date:
-        conditions.append("trade_date >= %s")
-        params.append(from_date)
-    if to_date:
-        conditions.append("trade_date <= %s")
-        params.append(to_date)
-    where = " AND ".join(conditions)
-    with get_cursor() as cur:
-        cur.execute(f"""
-            SELECT trade_date, stock_code, adj_open, adj_high, adj_low, adj_close, adj_volume, adjustment_factor
-            FROM daily_quotations_adjusted
-            WHERE {where}
-            ORDER BY trade_date DESC
-            LIMIT %s OFFSET %s
-        """, (*params, limit, offset))
-        rows = [dict(row) for row in cur.fetchall()]
-        cur.execute(f"""
-            SELECT COUNT(*) FROM daily_quotations_adjusted WHERE {where}
-        """, params)
-        total = cur.fetchone()[0]
-    return rows, total
-
-
-def get_market_highlights(from_date: Optional[date] = None, to_date: Optional[date] = None,
-                          limit: int = 100, offset: int = 0) -> tuple:
-    conditions = []
-    params = []
-    if from_date:
-        conditions.append("trade_date >= %s")
-        params.append(from_date)
-    if to_date:
-        conditions.append("trade_date <= %s")
-        params.append(to_date)
-    where = " AND ".join(conditions) if conditions else "TRUE"
-    with get_cursor() as cur:
-        cur.execute(f"""
-            SELECT * FROM market_highlights
-            WHERE {where}
-            ORDER BY trade_date DESC
-            LIMIT %s OFFSET %s
-        """, (*params, limit, offset))
-        rows = [dict(row) for row in cur.fetchall()]
-        cur.execute(f"SELECT COUNT(*) FROM market_highlights WHERE {where}", params)
-        total = cur.fetchone()[0]
-    return rows, total
-
-
-def get_short_selling(stock_code: Optional[str] = None, trade_date: Optional[date] = None,
-                      limit: int = 100, offset: int = 0) -> tuple:
-    conditions = []
-    params = []
-    if stock_code:
-        conditions.append("stock_code = %s")
-        params.append(stock_code)
+def get_short_selling(stock_id: Optional[int] = None, trade_date: Optional[date] = None,
+                      limit: int = 100, offset: int = 0) -> Tuple[List[Dict], int]:
+    conditions, params = [], []
+    if stock_id:
+        conditions.append("stock_id = %s")
+        params.append(stock_id)
     if trade_date:
         conditions.append("trade_date = %s")
         params.append(trade_date)
     where = " AND ".join(conditions) if conditions else "TRUE"
     with get_cursor() as cur:
         cur.execute(f"""
-            SELECT trade_date, stock_code, stock_name, short_shares, short_turnover, total_shares, total_turnover
-            FROM short_selling
+            SELECT ss.trade_date, ss.stock_id, ss.source_code, ss.short_shares,
+                   ss.short_turnover, ss.total_shares, ss.total_turnover, s.ticker, s.name
+            FROM short_selling ss JOIN stocks s ON s.id = ss.stock_id
             WHERE {where}
-            ORDER BY trade_date DESC, stock_code
-            LIMIT %s OFFSET %s
+            ORDER BY ss.trade_date DESC LIMIT %s OFFSET %s
         """, (*params, limit, offset))
-        rows = [dict(row) for row in cur.fetchall()]
+        rows = [dict(r) for r in cur.fetchall()]
         cur.execute(f"SELECT COUNT(*) FROM short_selling WHERE {where}", params)
         total = cur.fetchone()[0]
     return rows, total
 
 
-def get_trading_dates(limit: int = 100, offset: int = 0) -> tuple:
+# ---------------------------------------------------------------- indices
+
+def upsert_indices(indices: List[MarketIndex]) -> int:
+    if not indices:
+        return 0
+    sql = """
+        INSERT INTO market_indices (trade_date, market_code, index_code, index_name,
+            open, high, low, close, change, change_pct, source_code)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (trade_date, market_code, index_code) DO UPDATE SET
+            close = COALESCE(EXCLUDED.close, market_indices.close),
+            change = COALESCE(EXCLUDED.change, market_indices.change),
+            change_pct = COALESCE(EXCLUDED.change_pct, market_indices.change_pct),
+            source_code = EXCLUDED.source_code
+    """
     with get_cursor() as cur:
-        cur.execute("""
-            SELECT DISTINCT trade_date FROM daily_quotations
-            ORDER BY trade_date DESC
-            LIMIT %s OFFSET %s
-        """, (limit, offset))
-        rows = [row[0] for row in cur.fetchall()]
-        cur.execute("SELECT COUNT(DISTINCT trade_date) FROM daily_quotations")
+        cur.executemany(sql, [
+            (i.trade_date, i.market_code, i.index_code, i.index_name,
+             i.open, i.high, i.low, i.close, i.change, i.change_pct, i.source_code)
+            for i in indices
+        ])
+        return cur.rowcount
+
+
+def get_indices(market: str = "", from_date: Optional[date] = None,
+                to_date: Optional[date] = None, limit: int = 100, offset: int = 0) -> Tuple[List[Dict], int]:
+    conditions, params = [], []
+    if market:
+        conditions.append("market_code = %s")
+        params.append(market)
+    if from_date:
+        conditions.append("trade_date >= %s")
+        params.append(from_date)
+    if to_date:
+        conditions.append("trade_date <= %s")
+        params.append(to_date)
+    where = " AND ".join(conditions) if conditions else "TRUE"
+    with get_cursor() as cur:
+        cur.execute(f"""
+            SELECT * FROM market_indices WHERE {where}
+            ORDER BY trade_date DESC, index_code LIMIT %s OFFSET %s
+        """, (*params, limit, offset))
+        rows = [dict(r) for r in cur.fetchall()]
+        cur.execute(f"SELECT COUNT(*) FROM market_indices WHERE {where}", params)
         total = cur.fetchone()[0]
     return rows, total
 
 
-def get_scrape_logs(limit: int = 50, offset: int = 0) -> tuple:
+# ---------------------------------------------------------------- corporate actions
+
+def upsert_corporate_actions(actions: List[CorporateAction]) -> int:
+    if not actions:
+        return 0
+    sql = """
+        INSERT INTO corporate_actions (stock_id, action_date, action_type, split_ratio, dividend_amount, source_code)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        ON CONFLICT (stock_id, action_date, action_type) DO NOTHING
+    """
+    with get_cursor() as cur:
+        cur.executemany(sql, [
+            (a.stock_id, a.action_date, a.action_type, a.split_ratio, a.dividend_amount, a.source_code)
+            for a in actions
+        ])
+        return cur.rowcount
+
+
+def get_corporate_actions(stock_id: int) -> List[Dict]:
     with get_cursor() as cur:
         cur.execute("""
-            SELECT * FROM scrape_log
-            ORDER BY started_at DESC
-            LIMIT %s OFFSET %s
+            SELECT stock_id, action_date, action_type, split_ratio, dividend_amount, source_code
+            FROM corporate_actions WHERE stock_id = %s ORDER BY action_date
+        """, (stock_id,))
+        return [dict(r) for r in cur.fetchall()]
+
+
+# ---------------------------------------------------------------- fundamentals
+
+def upsert_fundamentals(f: Fundamentals) -> int:
+    sql = """
+        INSERT INTO fundamentals (stock_id, report_date, source_code, market_cap,
+            pe_ratio, eps, dividend_yield, sector, industry)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (stock_id, report_date, source_code) DO UPDATE SET
+            market_cap = EXCLUDED.market_cap,
+            pe_ratio = EXCLUDED.pe_ratio,
+            eps = EXCLUDED.eps,
+            dividend_yield = EXCLUDED.dividend_yield,
+            sector = EXCLUDED.sector,
+            industry = EXCLUDED.industry
+    """
+    with get_cursor() as cur:
+        cur.execute(sql, (f.stock_id, f.report_date, f.source_code, f.market_cap,
+                          f.pe_ratio, f.eps, f.dividend_yield, f.sector, f.industry))
+        return cur.rowcount
+
+
+def get_fundamentals(stock_id: int) -> Optional[Dict]:
+    with get_cursor() as cur:
+        cur.execute("""
+            SELECT * FROM fundamentals WHERE stock_id = %s
+            ORDER BY report_date DESC LIMIT 1
+        """, (stock_id,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+
+# ---------------------------------------------------------------- queue
+
+def enqueue(market_code: str, ticker: str, data_type: str) -> bool:
+    """Add to queue. Returns False if already pending/processing."""
+    with get_cursor() as cur:
+        cur.execute("""
+            INSERT INTO download_queue (market_code, ticker, data_type, status)
+            VALUES (%s, %s, %s, 'pending')
+            ON CONFLICT DO NOTHING
+        """, (market_code, ticker, data_type))
+        return cur.rowcount > 0
+
+
+def claim_queue_item(worker_id: str) -> Optional[Dict]:
+    with get_cursor() as cur:
+        cur.execute("""
+            SELECT id, market_code, ticker, data_type FROM download_queue
+            WHERE status = 'pending'
+            ORDER BY id LIMIT 1
+            FOR UPDATE SKIP LOCKED
+        """)
+        item = cur.fetchone()
+        if item:
+            cur.execute("""
+                UPDATE download_queue SET status = 'processing', started_at = NOW()
+                WHERE id = %s
+            """, (item["id"],))
+            return dict(item)
+    return None
+
+
+def complete_queue_item(item_id: int, error: str = ""):
+    with get_cursor() as cur:
+        cur.execute("""
+            UPDATE download_queue SET status = %s, completed_at = NOW(), error_message = %s
+            WHERE id = %s
+        """, ("failed" if error else "completed", error, item_id))
+
+
+def get_queue(limit: int = 100, offset: int = 0) -> Tuple[List[Dict], int]:
+    with get_cursor() as cur:
+        cur.execute("""
+            SELECT * FROM download_queue ORDER BY id DESC LIMIT %s OFFSET %s
         """, (limit, offset))
-        rows = [dict(row) for row in cur.fetchall()]
-        cur.execute("SELECT COUNT(*) FROM scrape_log")
+        rows = [dict(r) for r in cur.fetchall()]
+        cur.execute("SELECT COUNT(*) FROM download_queue")
         total = cur.fetchone()[0]
     return rows, total
+
+
+# ---------------------------------------------------------------- logs
+
+def log_scan(market_code: str, source_code: str, scan_type: str, status: str,
+             items_processed: int = 0, items_inserted: int = 0, error_message: str = None):
+    with get_cursor() as cur:
+        cur.execute("""
+            INSERT INTO scan_logs (market_code, source_code, scan_type, status,
+                items_processed, items_inserted, error_message, completed_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+        """, (market_code, source_code, scan_type, status, items_processed, items_inserted, error_message))
+
+
+def get_scan_logs(limit: int = 50, offset: int = 0) -> Tuple[List[Dict], int]:
+    with get_cursor() as cur:
+        cur.execute("SELECT * FROM scan_logs ORDER BY id DESC LIMIT %s OFFSET %s", (limit, offset))
+        rows = [dict(r) for r in cur.fetchall()]
+        cur.execute("SELECT COUNT(*) FROM scan_logs")
+        total = cur.fetchone()[0]
+    return rows, total
+
+
+# ---------------------------------------------------------------- misc
+
+def get_markets() -> List[Dict]:
+    with get_cursor() as cur:
+        cur.execute("SELECT market_code, market_name, currency, timezone FROM markets")
+        return [dict(r) for r in cur.fetchall()]
+
+
+def get_sources() -> List[Dict]:
+    with get_cursor() as cur:
+        cur.execute("""
+            SELECT ds.source_code, ds.source_name, ds.enabled, ms.market_code, ms.priority
+            FROM data_sources ds
+            LEFT JOIN market_sources ms ON ms.source_code = ds.source_code
+            ORDER BY ds.source_code, ms.priority
+        """)
+        return [dict(r) for r in cur.fetchall()]
 
 
 def get_dashboard_stats() -> Dict:
     with get_cursor() as cur:
-        cur.execute("SELECT COUNT(*) FROM stock_master WHERE status = 'active'")
-        active_stocks = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM stock_master WHERE status = 'delisted'")
-        delisted_stocks = cur.fetchone()[0]
-        cur.execute("SELECT MAX(trade_date) FROM daily_quotations")
+        cur.execute("SELECT COUNT(*) FROM stocks WHERE status = 'active'")
+        total_stocks = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM stocks WHERE watchlist")
+        watchlist = cur.fetchone()[0]
+        cur.execute("SELECT MAX(trade_date) FROM daily_prices")
         latest_date = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(DISTINCT trade_date) FROM daily_quotations")
+        cur.execute("SELECT COUNT(DISTINCT trade_date) FROM daily_prices")
         trading_days = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM daily_quotations")
-        total_quotations = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM daily_prices")
+        total_prices = cur.fetchone()[0]
     return {
-        "active_stocks": active_stocks,
-        "delisted_stocks": delisted_stocks,
+        "total_stocks": total_stocks,
+        "watchlist": watchlist,
         "latest_trade_date": latest_date,
         "trading_days": trading_days,
-        "total_quotations": total_quotations,
+        "total_prices": total_prices,
     }
-
-
-def get_stock_codes_needing_corporate_actions_sync():
-    with get_cursor() as cur:
-        cur.execute("""
-            SELECT sm.stock_code FROM stock_master sm
-            WHERE sm.status = 'active'
-            AND (
-                sm.stock_code NOT IN (SELECT DISTINCT stock_code FROM corporate_actions)
-                OR sm.updated_at > (SELECT MAX(created_at) FROM corporate_actions WHERE stock_code = sm.stock_code)
-                OR (SELECT MAX(created_at) FROM corporate_actions WHERE stock_code = sm.stock_code)
-                    < NOW() - INTERVAL '7 days'
-            )
-        """)
-        return [row[0] for row in cur.fetchall()]
