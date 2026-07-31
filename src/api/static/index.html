@@ -289,11 +289,25 @@ async function loadDashboard() {
 let stockState = { search: "", market: "", watchlist: "", limit: 50, offset: 0 };
 
 function searchStocks() {
-  stockState.search = document.getElementById("stk-search").value;
+  stockState.search = document.getElementById("stk-search").value.trim();
   stockState.market = document.getElementById("stk-market").value;
   stockState.watchlist = document.getElementById("stk-watchlist").value;
   stockState.offset = 0;
-  loadStocks();
+  loadStocks().then(data => {
+    if (!data) return;
+    const input = stockState.search.toLowerCase();
+    const isTicker = /^[a-z0-9.]+$/.test(input);
+    if (data.stocks.length === 1 && isTicker) {
+      openStock(data.stocks[0].ticker);
+    } else if (data.total === 0 && isTicker && input.length >= 2) {
+      apiFetch(`/stocks/${encodeURIComponent(stockState.search)}/prices`).then(res => {
+        if (res.status === "queued") {
+          toast(`Fetching ${stockState.search} from data sources — check back in ~30s`);
+          setTimeout(searchStocks, 25000);
+        }
+      }).catch(() => {});
+    }
+  });
 }
 
 async function loadStocks() {
@@ -310,16 +324,18 @@ async function loadStocks() {
       <td>${st.watchlist ? "✓" : ""}</td>
       <td><span class="tag ${st.status==="active"?"is-success":"is-danger"}">${esc(st.status)}</span></td>
       <td>${st.first_date||"-"}</td><td>${st.last_date||"-"}</td></tr>`).join("")
-      : '<tr><td colspan="7" class="has-text-grey">No stocks yet. Add tickers in the Watchlist tab, or search for a ticker above.</td></tr>';
+      : '<tr><td colspan="7" class="has-text-grey">No stocks found. Searching a ticker like "AAPL", "0700.HK" or "600519" will fetch it on demand.</td></tr>';
     document.getElementById("stocks-table").innerHTML = `
       <div class="table-container"><table class="table is-fullwidth is-striped is-hoverable is-size-7">
         <thead><tr><th>Ticker</th><th>Name</th><th>Market</th><th>Watchlist</th><th>Status</th><th>First</th><th>Last</th></tr></thead>
         <tbody>${rows}</tbody></table></div>`;
     document.getElementById("stocks-pagination").innerHTML =
       renderPagination(data.total, s.limit, s.offset, "stockState.offset=__VAL__;loadStocks()");
+    return data;
   } catch (e) {
     document.getElementById("stocks-table").innerHTML =
       `<p class="has-text-danger">Failed to load stocks: ${esc(e.message)}</p>`;
+    return null;
   }
 }
 
