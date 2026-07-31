@@ -1,5 +1,4 @@
-# Deploy compose — uses pre-built image from Gitea Container Registry.
-# Run: docker login git.waterworld.com.hk  (use registry token)
+# Deploy compose — uses pre-built image from GitHub Container Registry.
 # Then: docker compose -f docker-compose.deploy.yml pull
 #       docker compose -f docker-compose.deploy.yml up -d
 
@@ -22,7 +21,7 @@ services:
       retries: 5
 
   scraper:
-    image: git.waterworld.com.hk/water/stock-data:latest
+    image: ghcr.io/waterlou/stock-data:latest
     environment:
       DATABASE_URL: postgresql://hkex:hkex@postgres:5432/hkex
       SCRAPE_TIME: "17:00"
@@ -34,7 +33,7 @@ services:
     restart: unless-stopped
 
   web:
-    image: git.waterworld.com.hk/water/stock-data:latest
+    image: ghcr.io/waterlou/stock-data:latest
     command: uvicorn src.api.server:app --host 0.0.0.0 --port 8000
     ports:
       - "8000:8000"
