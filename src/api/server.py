@@ -195,6 +195,19 @@ def sources_health():
     return {"health": rows_to_json(queries.get_source_health())}
 
 
+@app.get("/api/schedule")
+def schedule():
+    jobs = []
+    if _scheduler:
+        for job in _scheduler.get_jobs():
+            jobs.append({
+                "id": job.id,
+                "name": job.name,
+                "next_run": job.next_run_time.isoformat() if job.next_run_time else None,
+            })
+    return {"jobs": jobs}
+
+
 @app.get("/api/keys")
 def list_keys():
     keys = queries.list_api_keys()

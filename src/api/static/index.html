@@ -132,6 +132,8 @@
     <div id="sources-priority"><p class="has-text-grey">Loading sources...</p></div>
     <h5 class="title is-6 mt-4">Health</h5>
     <div id="sources-health"><p class="has-text-grey">Loading health...</p></div>
+    <h5 class="title is-6 mt-4">Scheduled Jobs</h5>
+    <div id="sources-schedule"><p class="has-text-grey">Loading schedule...</p></div>
   </div>
 </section>
 
@@ -556,9 +558,10 @@ async function loadSources() {
   const market = document.getElementById("src-market").value;
   document.getElementById("sources-priority").innerHTML = '<p class="has-text-grey">Loading sources...</p>';
   document.getElementById("sources-health").innerHTML = '<p class="has-text-grey">Loading health...</p>';
+  document.getElementById("sources-schedule").innerHTML = '<p class="has-text-grey">Loading schedule...</p>';
   try {
-    const [src, health] = await Promise.all([
-      apiFetch("/sources"), apiFetch("/sources/health"),
+    const [src, health, sched] = await Promise.all([
+      apiFetch("/sources"), apiFetch("/sources/health"), apiFetch("/schedule"),
     ]);
     const order = src.sources.filter(s => s.market_code === market).sort((a, b) => a.priority - b.priority);
     const healthMap = {};
@@ -597,6 +600,13 @@ async function loadSources() {
             <td class="is-size-7" style="max-width:220px;overflow:hidden;text-overflow:ellipsis">${esc(h.last_error||"-")}</td></tr>`).join("")}</tbody>
         </table></div>`
       : '<p class="has-text-grey">No health data recorded yet.</p>';
+
+    document.getElementById("sources-schedule").innerHTML = (sched.jobs || []).length
+      ? `<div class="table-container"><table class="table is-fullwidth is-striped is-size-7">
+          <thead><tr><th>Name</th><th>Next Run</th></tr></thead>
+          <tbody>${sched.jobs.map(j => `<tr><td>${esc(j.name)}</td><td class="is-size-7">${j.next_run||"-"}</td></tr>`).join("")}</tbody>
+        </table></div>`
+      : '<p class="has-text-grey">No scheduled jobs.</p>';
   } catch (e) {
     document.getElementById("sources-priority").innerHTML =
       `<p class="has-text-danger">Failed to load sources: ${esc(e.message)}</p>`;
