@@ -180,6 +180,31 @@ def resolve_stock(ticker: str, market: str = "") -> Optional[dict]:
     return queries.get_stock_by_ticker(m, canonical)
 
 
+def _data_fetch_response(stock: dict, data_type: str, needs_fetch: bool, force: bool = False,
+                         recency_hours: float = 24.0,
+                         queued_message: str = "Data is being fetched. Retry in ~30s."):
+    """When data is missing: enqueue a fetch (202), or surface a prior failed
+    attempt (422) instead of silently returning an empty payload. Returns None
+    when existing data can be served as-is."""
+    if not needs_fetch:
+        return None
+    market, ticker = stock["market_code"], stock["ticker"]
+    if force or not queries.recently_fetched(market, ticker, data_type, hours=recency_hours):
+        queries.enqueue(market, ticker, data_type)
+        return JSONResponse(status_code=202, content={"status": "queued", "message": queued_message})
+    last = queries.last_fetch_status(market, ticker, data_type)
+    if last and last["status"] == "failed":
+        return JSONResponse(status_code=422, content={
+            "status": "failed",
+            "message": f"Last fetch failed: {last['error_message'] or 'unknown error'}",
+            "ticker": ticker,
+            "market": market,
+            "data_type": data_type,
+            "retry_after": f"{recency_hours:g}h",
+        })
+    return None
+
+
 _overview_cache = {"ts": 0.0, "data": None}
 
 
@@ -377,6 +402,7 @@ def stock_prices(
     limit: int = Query(default=100, le=1000),
     offset: int = Query(default=0, ge=0),
     format: str = "json",
+    force: bool = Query(default=False),
 ):
     stock = resolve_stock(ticker, market)
     if not stock:
@@ -390,10 +416,9 @@ def stock_prices(
     else:
         fd = _parse_date(from_date, 'from_date')
         td = _parse_date(to_date, 'to_date')
-    if not queries.has_prices(stock["id"]) and not queries.recently_fetched(
-            stock["market_code"], stock["ticker"], "price"):
-        queries.enqueue(stock["market_code"], stock["ticker"], "price")
-        return JSONResponse(status_code=202, content={"status": "queued", "message": "Data is being fetched. Retry in ~30s."})
+    resp = _data_fetch_response(stock, "price", not queries.has_prices(stock["id"]), force)
+    if resp is not None:
+        return resp
     rows, total = queries.get_prices(stock["id"], fd, td, limit, offset)
     if format in ("lean", "lean_hybrid"):
         zip_data = formats.lean_daily_zip(rows, stock["ticker"])
@@ -411,6 +436,7 @@ def stock_intraday(
     limit: int = Query(default=1000, le=5000),
     offset: int = Query(default=0, ge=0),
     format: str = "json",
+    force: bool = Query(default=False),
 ):
     data_type = f"intraday_{interval}"
     stock = resolve_stock(ticker, market)
@@ -422,10 +448,10 @@ def stock_intraday(
     recency_hours = INTRADAY_RECENCY_MINUTES / 60
     latest = queries.latest_intraday_dt(stock["id"], interval)
     stale = latest is None or latest < datetime.now(pytz.utc) - timedelta(minutes=INTRADAY_RECENCY_MINUTES)
-    if stale and not queries.recently_fetched(
-            stock["market_code"], stock["ticker"], data_type, hours=recency_hours):
-        queries.enqueue(stock["market_code"], stock["ticker"], data_type)
-        return JSONResponse(status_code=202, content={"status": "queued", "message": "Intraday data is being fetched."})
+    resp = _data_fetch_response(stock, data_type, stale, force, recency_hours=recency_hours,
+                                queued_message="Intraday data is being fetched.")
+    if resp is not None:
+        return resp
 
     from_date = date.today() - timedelta(days=days - 1)
     rows, total = queries.get_intraday_bars(stock["id"], interval, from_date, None, limit, offset)
@@ -443,30 +469,32 @@ def stock_intraday(
 
 
 @app.get("/api/stocks/{ticker}/corporate-actions")
-def stock_corporate_actions(ticker: str, market: str = ""):
+def stock_corporate_actions(ticker: str, market: str = "", force: bool = Query(default=False)):
     stock = resolve_stock(ticker, market)
     if not stock:
         m = resolve_market(ticker, market)
         queries.enqueue(m, _normalize(m, ticker), "corporate_actions")
         return JSONResponse(status_code=202, content={"status": "queued", "message": "Corporate actions are being fetched."})
-    if not queries.has_corporate_actions(stock["id"]) and not queries.recently_fetched(
-            stock["market_code"], stock["ticker"], "corporate_actions"):
-        queries.enqueue(stock["market_code"], stock["ticker"], "corporate_actions")
-        return JSONResponse(status_code=202, content={"status": "queued", "message": "Corporate actions are being fetched."})
+    resp = _data_fetch_response(stock, "corporate_actions",
+                                not queries.has_corporate_actions(stock["id"]), force,
+                                queued_message="Corporate actions are being fetched.")
+    if resp is not None:
+        return resp
     return {"actions": rows_to_json(queries.get_corporate_actions(stock["id"]))}
 
 
 @app.get("/api/stocks/{ticker}/fundamentals")
-def stock_fundamentals(ticker: str, market: str = ""):
+def stock_fundamentals(ticker: str, market: str = "", force: bool = Query(default=False)):
     stock = resolve_stock(ticker, market)
     if not stock:
         m = resolve_market(ticker, market)
         queries.enqueue(m, _normalize(m, ticker), "fundamentals")
         return JSONResponse(status_code=202, content={"status": "queued", "message": "Fundamentals are being fetched."})
-    if not queries.has_fundamentals(stock["id"]) and not queries.recently_fetched(
-            stock["market_code"], stock["ticker"], "fundamentals"):
-        queries.enqueue(stock["market_code"], stock["ticker"], "fundamentals")
-        return JSONResponse(status_code=202, content={"status": "queued", "message": "Fundamentals are being fetched."})
+    resp = _data_fetch_response(stock, "fundamentals",
+                                not queries.has_fundamentals(stock["id"]), force,
+                                queued_message="Fundamentals are being fetched.")
+    if resp is not None:
+        return resp
     f = queries.get_fundamentals(stock["id"])
     return {"fundamentals": rows_to_json([f])[0] if f else None}
 
