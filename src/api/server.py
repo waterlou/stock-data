@@ -12,13 +12,14 @@ import pytz
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from src.config import (INTRADAY_RECENCY_MINUTES, INTRADAY_RETENTION_DAYS,
                         RATE_LIMIT_PER_MINUTE, SCRAPE_TIME_HK, SCRAPE_TIME_US,
                         TZ, WORKER_POLL_INTERVAL)
 from src.database import queries
+from src import formats
 from src.sources.normalizer import normalize_ticker, market_from_ticker
 from src.workers import batch, ondemand
 
@@ -242,6 +243,7 @@ def stock_prices(
     days: Optional[int] = Query(default=None, ge=1, le=1000),
     limit: int = Query(default=100, le=1000),
     offset: int = Query(default=0, ge=0),
+    format: str = "json",
 ):
     stock = resolve_stock(ticker, market)
     if not stock:
@@ -260,6 +262,10 @@ def stock_prices(
         queries.enqueue(stock["market_code"], stock["ticker"], "price")
         return {"status": "queued", "message": "Data is being fetched. Retry in ~30s."}, 202
     rows, total = queries.get_prices(stock["id"], fd, td, limit, offset)
+    if format in ("lean", "lean_hybrid"):
+        zip_data = formats.lean_daily_zip(rows, stock["ticker"])
+        return Response(content=zip_data, media_type="application/zip",
+                        headers={"Content-Disposition": f'attachment; filename="{stock["ticker"]}.zip"'})
     return {"prices": rows_to_json(rows), "total": total}
 
 
@@ -271,6 +277,7 @@ def stock_intraday(
     days: int = Query(default=1, ge=1, le=60),
     limit: int = Query(default=1000, le=5000),
     offset: int = Query(default=0, ge=0),
+    format: str = "json",
 ):
     data_type = f"intraday_{interval}"
     stock = resolve_stock(ticker, market)
@@ -287,6 +294,14 @@ def stock_intraday(
 
     from_date = date.today() - timedelta(days=days - 1)
     rows, total = queries.get_intraday_bars(stock["id"], interval, from_date, None, limit, offset)
+    if format == "lean_hybrid":
+        zip_data = formats.lean_hybrid_intraday_zip(rows, stock["ticker"])
+        return Response(content=zip_data, media_type="application/zip",
+                        headers={"Content-Disposition": f'attachment; filename="{stock["ticker"]}.zip"'})
+    if format == "lean":
+        zip_data = formats.lean_intraday_zip(rows, stock["ticker"])
+        return Response(content=zip_data, media_type="application/zip",
+                        headers={"Content-Disposition": f'attachment; filename="{stock["ticker"]}.zip"'})
     return {"bars": rows_to_json(rows), "total": total}
 
 

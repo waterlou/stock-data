@@ -32,8 +32,8 @@ US batch downloads only track stocks on the watchlist. Manage via the **Watchlis
 | `PATCH /api/sources/{market}/{source}` | Set `priority` and/or `enabled` for a source |
 | `GET /api/sources/health` | Source health (consecutive failures) |
 | `GET /api/stocks` | List stocks (`?search=`, `?market=`, `?watchlist=`) |
-| `GET /api/stocks/{ticker}/prices` | Daily OHLCV (`?from_date=`, `?to_date=`, or `?days=30` for last N trading days) — returns `202` if queued |
-| `GET /api/stocks/{ticker}/intraday` | Intraday bars (`?interval=5` for 5m bars, `?days=3`) — Yahoo only, retained 30 days |
+| `GET /api/stocks/{ticker}/prices` | Daily OHLCV (`?from_date=`, `?to_date=`, or `?days=30` for last N trading days) — returns `202` if queued. Add `?format=lean`/`lean_hybrid` for zip downloads |
+| `GET /api/stocks/{ticker}/intraday` | Intraday bars (`?interval=5` for 5m bars, `?days=3`) — Yahoo only, retained 30 days. `?format=lean`/`lean_hybrid` for LEAN zips |
 | `GET /api/stocks/{ticker}/corporate-actions` | Splits & dividends |
 | `GET /api/stocks/{ticker}/fundamentals` | Market cap, P/E, EPS, sector |
 | `GET /api/indices` | Market indices (HSI, S&P 500) |
