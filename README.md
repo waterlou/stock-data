@@ -31,6 +31,7 @@ US batch downloads only track stocks on the watchlist. Manage via the **Watchlis
 | `GET /api/sources` | Data sources + per-market priority |
 | `GET /api/stocks` | List stocks (`?search=`, `?market=`, `?watchlist=`) |
 | `GET /api/stocks/{ticker}/prices` | Daily OHLCV (`?from_date=`, `?to_date=`, or `?days=30` for last N trading days) — returns `202` if queued |
+| `GET /api/stocks/{ticker}/intraday` | Intraday bars (`?interval=5` for 5m bars, `?days=3`) — Yahoo only, retained 30 days |
 | `GET /api/stocks/{ticker}/corporate-actions` | Splits & dividends |
 | `GET /api/stocks/{ticker}/fundamentals` | Market cap, P/E, EPS, sector |
 | `GET /api/indices` | Market indices (HSI, S&P 500) |
@@ -51,3 +52,5 @@ Ticker params are forgiving: `0700.HK`, `00700.HK`, `700` all work.
 | `TZ` | `Asia/Hong_Kong` | Timezone |
 | `LOG_LEVEL` | `INFO` | Logging level |
 | `WORKER_POLL_INTERVAL` | `5` | On-demand queue poll interval (s) |
+| `INTRADAY_RETENTION_DAYS` | `30` | Intraday bars deleted after N days |
+| `INTRADAY_RECENCY_MINUTES` | `15` | Intraday re-fetch cooldown (min) |

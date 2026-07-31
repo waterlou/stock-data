@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import Dict, List, Optional, Tuple
 
@@ -289,7 +289,7 @@ def has_fundamentals(stock_id: int) -> bool:
         return cur.fetchone() is not None
 
 
-def recently_fetched(market_code: str, ticker: str, data_type: str, hours: int = 24) -> bool:
+def recently_fetched(market_code: str, ticker: str, data_type: str, hours: float = 24) -> bool:
     """True if a completed fetch for this (market, ticker, type) succeeded within N hours."""
     with get_cursor() as cur:
         cur.execute("""
@@ -371,6 +371,64 @@ def get_scan_logs(limit: int = 50, offset: int = 0) -> Tuple[List[Dict], int]:
         cur.execute("SELECT COUNT(*) FROM scan_logs")
         total = cur.fetchone()[0]
     return rows, total
+
+
+# ---------------------------------------------------------------- intraday
+
+def upsert_intraday_bars(bars) -> int:
+    if not bars:
+        return 0
+    sql = """
+        INSERT INTO intraday_prices (date_time, stock_id, source_code, interval_min,
+            open, high, low, close, volume)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (date_time, stock_id, interval_min) DO UPDATE SET
+            close = COALESCE(EXCLUDED.close, intraday_prices.close),
+            source_code = EXCLUDED.source_code
+    """
+    with get_cursor() as cur:
+        cur.executemany(sql, [
+            (b.date_time, b.stock_id, b.source_code, b.interval_min,
+             b.open, b.high, b.low, b.close, b.volume)
+            for b in bars
+        ])
+        return cur.rowcount
+
+
+def get_intraday_bars(stock_id: int, interval_min: int, from_date: Optional[date] = None,
+                      to_date: Optional[date] = None, limit: int = 1000, offset: int = 0) -> Tuple[List[Dict], int]:
+    conditions, params = ["stock_id = %s", "interval_min = %s"], [stock_id, interval_min]
+    if from_date:
+        conditions.append("date_time >= %s")
+        params.append(from_date)
+    if to_date:
+        conditions.append("date_time <= %s")
+        params.append(to_date + timedelta(days=1))
+    where = " AND ".join(conditions)
+    with get_cursor() as cur:
+        cur.execute(f"""
+            SELECT date_time, stock_id, source_code, interval_min, open, high, low, close, volume
+            FROM intraday_prices WHERE {where}
+            ORDER BY date_time DESC LIMIT %s OFFSET %s
+        """, (*params, limit, offset))
+        rows = [dict(r) for r in cur.fetchall()]
+        cur.execute(f"SELECT COUNT(*) FROM intraday_prices WHERE {where}", params)
+        total = cur.fetchone()[0]
+    return rows, total
+
+
+def has_intraday(stock_id: int, interval_min: int) -> bool:
+    with get_cursor() as cur:
+        cur.execute("""
+            SELECT 1 FROM intraday_prices WHERE stock_id = %s AND interval_min = %s LIMIT 1
+        """, (stock_id, interval_min))
+        return cur.fetchone() is not None
+
+
+def cleanup_old_intraday(days: int = 30):
+    with get_cursor() as cur:
+        cur.execute("DELETE FROM intraday_prices WHERE date_time < NOW() - INTERVAL '%s days'", (days,))
+        return cur.rowcount
 
 
 # ---------------------------------------------------------------- misc

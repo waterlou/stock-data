@@ -5,7 +5,7 @@ from typing import List, Optional
 
 import yfinance as yf
 
-from src.models import CorporateAction, Fundamentals, MarketIndex, Price
+from src.models import CorporateAction, Fundamentals, IntradayBar, MarketIndex, Price
 from src.sources.base import DataSource
 
 logger = logging.getLogger(__name__)
@@ -19,6 +19,36 @@ class YahooSource(DataSource):
     supports_corporate_actions = True
     supports_fundamentals = True
     supports_bulk_daily = True
+    supports_intraday = True
+
+    def fetch_intraday(self, ticker: str, interval_min: int,
+                       date_from: date, date_to: date) -> List[IntradayBar]:
+        try:
+            hist = yf.Ticker(ticker).history(
+                interval=f"{interval_min}m",
+                start=date_from.isoformat(),
+                end=(date_to + timedelta(days=1)).isoformat(),
+                auto_adjust=False,
+            )
+        except Exception as e:
+            logger.warning("yfinance intraday failed for %s: %s", ticker, e)
+            return []
+
+        bars = []
+        for idx, row in hist.iterrows():
+            dt = idx.to_pydatetime() if hasattr(idx, "to_pydatetime") else idx
+            bars.append(IntradayBar(
+                date_time=dt,
+                stock_id=0,
+                source_code=self.source_code,
+                interval_min=interval_min,
+                open=_dec(row.get("Open")),
+                high=_dec(row.get("High")),
+                low=_dec(row.get("Low")),
+                close=_dec(row.get("Close")),
+                volume=_int(row.get("Volume")),
+            ))
+        return bars
 
     def fetch_prices(self, ticker: str, date_from: date, date_to: date) -> List[Price]:
         try:

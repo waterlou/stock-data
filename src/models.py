@@ -1,7 +1,20 @@
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional
+
+
+@dataclass
+class IntradayBar:
+    date_time: datetime
+    stock_id: int
+    source_code: str
+    interval_min: int
+    open: Optional[Decimal] = None
+    high: Optional[Decimal] = None
+    low: Optional[Decimal] = None
+    close: Optional[Decimal] = None
+    volume: Optional[int] = None
 
 
 @dataclass

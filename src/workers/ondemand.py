@@ -1,6 +1,6 @@
 import logging
 import time
-from datetime import date
+from datetime import date, timedelta
 
 from src.database import queries
 from src.sources import registry
@@ -8,6 +8,9 @@ from src.workers import batch
 from src.workers.batch import FULL_HISTORY_FROM
 
 logger = logging.getLogger(__name__)
+
+# Yahoo intraday availability limits by interval (days); keep a safety margin
+INTRADAY_WINDOW_DAYS = {1: 7, 2: 55, 5: 55, 15: 55, 30: 55, 60: 700}
 
 CAPABILITY_BY_TYPE = {
     "price": "supports_history",
@@ -18,12 +21,25 @@ CAPABILITY_BY_TYPE = {
 
 def process_queue_item(item: dict):
     market, ticker, data_type = item["market_code"], item["ticker"], item["data_type"]
+    stock_id = queries.upsert_stock(market, ticker)
+
+    if data_type.startswith("intraday_"):
+        interval = int(data_type.split("_")[1])
+        source = registry.best_source(market, "supports_intraday")
+        if not source:
+            raise RuntimeError(f"No intraday source for {market}")
+        window = INTRADAY_WINDOW_DAYS.get(interval, 60)
+        start = date.today() - timedelta(days=window)
+        bars = source.fetch_intraday(ticker, interval, start, date.today())
+        for b in bars:
+            b.stock_id = stock_id
+        queries.upsert_intraday_bars(bars)
+        return
+
     capability = CAPABILITY_BY_TYPE.get(data_type, "supports_history")
     source = registry.best_source(market, capability)
     if not source:
         raise RuntimeError(f"No source for {market}/{ticker} {data_type}")
-
-    stock_id = queries.upsert_stock(market, ticker)
 
     if data_type == "price":
         source = registry.best_source(market, "supports_history")

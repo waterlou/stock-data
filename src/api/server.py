@@ -2,7 +2,7 @@ import logging
 import os
 import threading
 from contextlib import asynccontextmanager
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import Optional
 
@@ -13,7 +13,8 @@ from fastapi import FastAPI, Query
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
-from src.config import SCRAPE_TIME_HK, SCRAPE_TIME_US, TZ, WORKER_POLL_INTERVAL
+from src.config import (INTRADAY_RECENCY_MINUTES, INTRADAY_RETENTION_DAYS,
+                        SCRAPE_TIME_HK, SCRAPE_TIME_US, TZ, WORKER_POLL_INTERVAL)
 from src.database import queries
 from src.sources.normalizer import normalize_ticker, market_from_ticker
 from src.workers import batch, ondemand
@@ -37,6 +38,9 @@ def start_background():
                            id="hk_batch", name="HK daily batch")
         _scheduler.add_job(batch.run_us_batch, CronTrigger(hour=int(uh), minute=int(um)),
                            id="us_batch", name="US daily batch")
+        _scheduler.add_job(
+            lambda: queries.cleanup_old_intraday(INTRADAY_RETENTION_DAYS),
+            CronTrigger(hour=3), id="intraday_cleanup", name="Intraday retention cleanup")
         _scheduler.start()
         logger.info("Scheduler started (HK %s, US %s)", SCRAPE_TIME_HK, SCRAPE_TIME_US)
     if _worker_thread is None or not _worker_thread.is_alive():
@@ -209,6 +213,33 @@ def stock_prices(
         return {"status": "queued", "message": "Data is being fetched. Retry in ~30s."}, 202
     rows, total = queries.get_prices(stock["id"], fd, td, limit, offset)
     return {"prices": rows_to_json(rows), "total": total}
+
+
+@app.get("/api/stocks/{ticker}/intraday")
+def stock_intraday(
+    ticker: str,
+    market: str = "",
+    interval: int = Query(default=5, ge=1, le=60),
+    days: int = Query(default=1, ge=1, le=60),
+    limit: int = Query(default=1000, le=5000),
+    offset: int = Query(default=0, ge=0),
+):
+    data_type = f"intraday_{interval}"
+    stock = resolve_stock(ticker, market)
+    if not stock:
+        m = resolve_market(ticker, market)
+        queries.enqueue(m, normalize_ticker(ticker, m), data_type)
+        return {"status": "queued", "message": "Intraday data is being fetched."}, 202
+
+    recency_hours = INTRADAY_RECENCY_MINUTES / 60
+    if not queries.has_intraday(stock["id"], interval) and not queries.recently_fetched(
+            stock["market_code"], stock["ticker"], data_type, hours=recency_hours):
+        queries.enqueue(stock["market_code"], stock["ticker"], data_type)
+        return {"status": "queued", "message": "Intraday data is being fetched."}, 202
+
+    from_date = date.today() - timedelta(days=days - 1)
+    rows, total = queries.get_intraday_bars(stock["id"], interval, from_date, None, limit, offset)
+    return {"bars": rows_to_json(rows), "total": total}
 
 
 @app.get("/api/stocks/{ticker}/corporate-actions")

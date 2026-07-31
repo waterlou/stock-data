@@ -110,6 +110,21 @@ CREATE TABLE IF NOT EXISTS fundamentals (
     PRIMARY KEY (stock_id, report_date, source_code)
 );
 
+-- Intraday OHLCV bars (5m default, on-demand)
+CREATE TABLE IF NOT EXISTS intraday_prices (
+    date_time    TIMESTAMPTZ NOT NULL,
+    stock_id     INT NOT NULL REFERENCES stocks(id),
+    source_code  VARCHAR(20) NOT NULL REFERENCES data_sources(source_code),
+    interval_min INT NOT NULL DEFAULT 5,
+    open         NUMERIC,
+    high         NUMERIC,
+    low          NUMERIC,
+    close        NUMERIC,
+    volume       BIGINT,
+    PRIMARY KEY (date_time, stock_id, interval_min)
+);
+CREATE INDEX IF NOT EXISTS idx_intraday_stock ON intraday_prices (stock_id, interval_min, date_time);
+
 -- On-demand download queue
 CREATE TABLE IF NOT EXISTS download_queue (
     id            SERIAL PRIMARY KEY,

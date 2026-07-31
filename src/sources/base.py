@@ -1,7 +1,7 @@
 from datetime import date
 from typing import List, Optional
 
-from src.models import CorporateAction, Fundamentals, MarketIndex, Price
+from src.models import CorporateAction, Fundamentals, IntradayBar, MarketIndex, Price
 
 
 class DataSource:
@@ -14,11 +14,16 @@ class DataSource:
     supports_bulk_daily = False    # whole-market daily snapshot in one fetch
     supports_corporate_actions = False
     supports_fundamentals = False
+    supports_intraday = False
 
     def supports(self, market: str) -> bool:
         return market in self.supported_markets
 
     def fetch_prices(self, ticker: str, date_from: date, date_to: date) -> List[Price]:
+        return []
+
+    def fetch_intraday(self, ticker: str, interval_min: int,
+                       date_from: date, date_to: date) -> List[IntradayBar]:
         return []
 
     def fetch_corporate_actions(self, ticker: str) -> List[CorporateAction]:

@@ -9,6 +9,8 @@ SCRAPE_TIME_US = os.getenv("SCRAPE_TIME_US", "06:00")
 TZ = os.getenv("TZ", "Asia/Hong_Kong")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 WORKER_POLL_INTERVAL = int(os.getenv("WORKER_POLL_INTERVAL", "5"))
+INTRADAY_RETENTION_DAYS = int(os.getenv("INTRADAY_RETENTION_DAYS", "30"))
+INTRADAY_RECENCY_MINUTES = int(os.getenv("INTRADAY_RECENCY_MINUTES", "15"))
 
 HKEX_BASE_URL = "https://www.hkex.com.hk"
 HKEX_CALENDAR_URL = f"{HKEX_BASE_URL}/eng/stat/smstat/dayquot/qtn.asp"
