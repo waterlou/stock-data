@@ -4,6 +4,11 @@ from typing import List, Optional
 from src.models import CorporateAction, Fundamentals, IntradayBar, MarketIndex, Price
 
 
+class SourceError(Exception):
+    """Raised on transport-level failures (network, HTTP, auth). Not for
+    valid-but-empty responses or per-ticker parse issues."""
+
+
 class DataSource:
     source_code: str = ""
     source_name: str = ""

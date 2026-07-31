@@ -149,6 +149,7 @@ CREATE TABLE IF NOT EXISTS download_queue (
     error_message TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_queue_status ON download_queue (status, created_at);
+CREATE INDEX IF NOT EXISTS idx_queue_recent ON download_queue (market_code, ticker, data_type, status, completed_at);
 -- Only one in-flight request per (market, ticker, type)
 CREATE UNIQUE INDEX IF NOT EXISTS idx_queue_dedup ON download_queue (market_code, ticker, data_type)
     WHERE status IN ('pending', 'processing');

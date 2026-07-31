@@ -33,7 +33,6 @@ def compare_sources(ticker, market, dfrom, dto, weeks=104):
     if market == "CN":
         yahoo_ticker = ticker[:-3] + _CN_YAHOO.get(ticker[-3:], ".SS")
         sources.append(YahooSource())
-        yahoo_ticker = yahoo_ticker  # ticker passed per-source below
     else:
         yahoo_ticker = ticker
     if not sources:

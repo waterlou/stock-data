@@ -7,7 +7,7 @@ from typing import List, Optional
 import requests
 
 from src.models import Price
-from src.sources.base import DataSource
+from src.sources.base import DataSource, SourceError
 
 logger = logging.getLogger(__name__)
 
@@ -46,16 +46,16 @@ class TencentSource(DataSource):
             resp = requests.get(url, timeout=30)
             resp.raise_for_status()
         except requests.exceptions.RequestException as e:
-            logger.warning("Tencent kline failed for %s: %s", symbol, e)
-            return []
+            raise SourceError(f"Tencent kline failed for {symbol}: {e}") from e
         text = resp.text.strip()
         if text.startswith("kl="):
             text = text[len("kl="):]
         try:
             data = json.loads(text)
         except ValueError as e:
-            logger.warning("Tencent kline parse error for %s: %s", symbol, e)
-            return []
+            raise SourceError(f"Tencent kline parse error for {symbol}: {e}") from e
+        if data.get("code") != 0:
+            raise SourceError(f"Tencent kline error for {symbol}: {data.get('msg')}")
         node = data.get("data", {}).get(symbol, {})
         return node.get("qfqday") or node.get("day") or []
 

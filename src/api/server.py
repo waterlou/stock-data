@@ -16,7 +16,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Res
 from fastapi.staticfiles import StaticFiles
 
 from src.config import (API_KEY, INTRADAY_RECENCY_MINUTES, INTRADAY_RETENTION_DAYS,
-                        RATE_LIMIT_PER_MINUTE, SCRAPE_TIME_HK, SCRAPE_TIME_US,
+                        LOG_LEVEL, RATE_LIMIT_PER_MINUTE, SCRAPE_TIME_HK, SCRAPE_TIME_US,
                         TZ, WORKER_POLL_INTERVAL)
 from src.database import queries
 from src.database.connection import init_database
@@ -24,7 +24,8 @@ from src import formats
 from src.sources.normalizer import normalize_ticker, market_from_ticker
 from src.workers import batch, ondemand
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+logging.basicConfig(level=getattr(logging, LOG_LEVEL.upper(), logging.INFO),
+                    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 static_dir = os.path.join(os.path.dirname(__file__), "static")
@@ -52,6 +53,8 @@ def start_background():
                            id="intraday_partitions", name="Ensure intraday partitions")
         _scheduler.add_job(batch.run_source_health_check, CronTrigger(minute=30),
                            id="source_health", name="Source health check")
+        _scheduler.add_job(lambda: (queries.prune_queue(), queries.prune_scan_logs()),
+                           CronTrigger(hour=4), id="prune", name="Prune queue & logs")
         _scheduler.start()
         logger.info("Scheduler started (HK %s, US %s)", SCRAPE_TIME_HK, SCRAPE_TIME_US)
     if _worker_thread is None or not _worker_thread.is_alive():
@@ -83,6 +86,7 @@ def require_api_key(x_api_key: str = Header(default="")):
 # Simple per-client token bucket rate limiter
 _rate_buckets = {}
 _rate_lock = threading.Lock()
+_rate_last_sweep = [time.monotonic()]
 
 
 @app.middleware("http")
@@ -91,6 +95,12 @@ async def rate_limit(request: Request, call_next):
         client = request.client.host if request.client else "unknown"
         now = time.monotonic()
         with _rate_lock:
+            # Bounded memory: evict idle buckets once a minute.
+            if now - _rate_last_sweep[0] > 60:
+                _rate_last_sweep[0] = now
+                idle = [k for k, v in _rate_buckets.items() if now - v[1] > 120]
+                for k in idle:
+                    del _rate_buckets[k]
             bucket = _rate_buckets.get(client)
             if bucket is None:
                 bucket = _rate_buckets[client] = [RATE_LIMIT_PER_MINUTE, now]
@@ -159,13 +169,23 @@ def update_source(market: str, source_code: str, body: dict, _: None = Depends(r
     priority = body.get("priority")
     enabled = body.get("enabled")
     if priority is None and enabled is None:
-        return {"error": "Provide priority and/or enabled"}, 400
-    if priority is not None and not (1 <= int(priority) <= 100):
-        return {"error": "priority must be 1-100"}, 400
-    queries.update_source(market, source_code,
-                          priority=int(priority) if priority is not None else None,
-                          enabled=bool(enabled) if enabled is not None else None)
+        return JSONResponse(status_code=400, content={"error": "Provide priority and/or enabled"})
+    if priority is not None and (not isinstance(priority, int) or isinstance(priority, bool)
+                                 or not (1 <= priority <= 100)):
+        return JSONResponse(status_code=400, content={"error": "priority must be an integer 1-100"})
+    if enabled is not None and not isinstance(enabled, bool):
+        return JSONResponse(status_code=400, content={"error": "enabled must be a boolean"})
+    queries.update_source(market, source_code, priority=priority, enabled=enabled)
     return {"updated": True, "market": market, "source_code": source_code}
+
+
+def _parse_date(value: str, param: str) -> Optional[date]:
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid {param}: {value!r} (expected YYYY-MM-DD)")
 
 
 @app.get("/api/stocks")
@@ -194,7 +214,10 @@ def add_to_watchlist(body: dict, _: None = Depends(require_api_key)):
     added = []
     for t in tickers:
         m = resolve_market(t, market)
-        canonical = normalize_ticker(t, m)
+        try:
+            canonical = normalize_ticker(t, m)
+        except ValueError:
+            continue
         stock_id = queries.upsert_stock(m, canonical)
         queries.update_stock_watchlist(stock_id, True)
         added.append(canonical)
@@ -258,18 +281,18 @@ def stock_prices(
     if not stock:
         m = resolve_market(ticker, market)
         queries.enqueue(m, normalize_ticker(ticker, m), "price")
-        return {"status": "queued", "message": "Data is being fetched. Retry in ~30s."}, 202
+        return JSONResponse(status_code=202, content={"status": "queued", "message": "Data is being fetched. Retry in ~30s."})
 
     if days:
         fd = td = None
         limit, offset = days, 0
     else:
-        fd = date.fromisoformat(from_date) if from_date else None
-        td = date.fromisoformat(to_date) if to_date else None
+        fd = _parse_date(from_date, 'from_date')
+        td = _parse_date(to_date, 'to_date')
     if not queries.has_prices(stock["id"]) and not queries.recently_fetched(
             stock["market_code"], stock["ticker"], "price"):
         queries.enqueue(stock["market_code"], stock["ticker"], "price")
-        return {"status": "queued", "message": "Data is being fetched. Retry in ~30s."}, 202
+        return JSONResponse(status_code=202, content={"status": "queued", "message": "Data is being fetched. Retry in ~30s."})
     rows, total = queries.get_prices(stock["id"], fd, td, limit, offset)
     if format in ("lean", "lean_hybrid"):
         zip_data = formats.lean_daily_zip(rows, stock["ticker"])
@@ -293,7 +316,7 @@ def stock_intraday(
     if not stock:
         m = resolve_market(ticker, market)
         queries.enqueue(m, normalize_ticker(ticker, m), data_type)
-        return {"status": "queued", "message": "Intraday data is being fetched."}, 202
+        return JSONResponse(status_code=202, content={"status": "queued", "message": "Intraday data is being fetched."})
 
     recency_hours = INTRADAY_RECENCY_MINUTES / 60
     latest = queries.latest_intraday_dt(stock["id"], interval)
@@ -301,7 +324,7 @@ def stock_intraday(
     if stale and not queries.recently_fetched(
             stock["market_code"], stock["ticker"], data_type, hours=recency_hours):
         queries.enqueue(stock["market_code"], stock["ticker"], data_type)
-        return {"status": "queued", "message": "Intraday data is being fetched."}, 202
+        return JSONResponse(status_code=202, content={"status": "queued", "message": "Intraday data is being fetched."})
 
     from_date = date.today() - timedelta(days=days - 1)
     rows, total = queries.get_intraday_bars(stock["id"], interval, from_date, None, limit, offset)
@@ -324,11 +347,11 @@ def stock_corporate_actions(ticker: str, market: str = ""):
     if not stock:
         m = resolve_market(ticker, market)
         queries.enqueue(m, normalize_ticker(ticker, m), "corporate_actions")
-        return {"status": "queued", "message": "Corporate actions are being fetched."}, 202
+        return JSONResponse(status_code=202, content={"status": "queued", "message": "Corporate actions are being fetched."})
     if not queries.has_corporate_actions(stock["id"]) and not queries.recently_fetched(
             stock["market_code"], stock["ticker"], "corporate_actions"):
         queries.enqueue(stock["market_code"], stock["ticker"], "corporate_actions")
-        return {"status": "queued", "message": "Corporate actions are being fetched."}, 202
+        return JSONResponse(status_code=202, content={"status": "queued", "message": "Corporate actions are being fetched."})
     return {"actions": rows_to_json(queries.get_corporate_actions(stock["id"]))}
 
 
@@ -338,11 +361,11 @@ def stock_fundamentals(ticker: str, market: str = ""):
     if not stock:
         m = resolve_market(ticker, market)
         queries.enqueue(m, normalize_ticker(ticker, m), "fundamentals")
-        return {"status": "queued", "message": "Fundamentals are being fetched."}, 202
+        return JSONResponse(status_code=202, content={"status": "queued", "message": "Fundamentals are being fetched."})
     if not queries.has_fundamentals(stock["id"]) and not queries.recently_fetched(
             stock["market_code"], stock["ticker"], "fundamentals"):
         queries.enqueue(stock["market_code"], stock["ticker"], "fundamentals")
-        return {"status": "queued", "message": "Fundamentals are being fetched."}, 202
+        return JSONResponse(status_code=202, content={"status": "queued", "message": "Fundamentals are being fetched."})
     return {"fundamentals": rows_to_json([queries.get_fundamentals(stock["id"])])[0]}
 
 
@@ -354,8 +377,8 @@ def indices(
     limit: int = Query(default=100, le=1000),
     offset: int = Query(default=0, ge=0),
 ):
-    fd = date.fromisoformat(from_date) if from_date else None
-    td = date.fromisoformat(to_date) if to_date else None
+    fd = _parse_date(from_date, 'from_date')
+    td = _parse_date(to_date, 'to_date')
     rows, total = queries.get_indices(market, fd, td, limit, offset)
     return {"indices": rows_to_json(rows), "total": total}
 
@@ -373,7 +396,7 @@ def short_selling(
         stock = resolve_stock(ticker, market)
         if not stock:
             return {"entries": [], "total": 0}
-    td = date.fromisoformat(trade_date) if trade_date else None
+    td = _parse_date(trade_date, 'trade_date')
     rows, total = queries.get_short_selling(
         stock["id"] if stock else None, td, limit, offset)
     return {"entries": rows_to_json(rows), "total": total}

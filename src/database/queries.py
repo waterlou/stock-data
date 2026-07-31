@@ -348,7 +348,7 @@ def recover_stale_queue_items(stale_minutes: int = 30) -> int:
         return cur.rowcount
 
 
-def claim_queue_item(worker_id: str) -> Optional[Dict]:
+def claim_queue_item() -> Optional[Dict]:
     with get_cursor() as cur:
         cur.execute("""
             SELECT id, market_code, ticker, data_type FROM download_queue
@@ -383,6 +383,26 @@ def get_queue(limit: int = 100, offset: int = 0) -> Tuple[List[Dict], int]:
         cur.execute("SELECT COUNT(*) FROM download_queue")
         total = cur.fetchone()[0]
     return rows, total
+
+
+def prune_queue(keep_days: int = 30) -> int:
+    """Delete completed/failed queue items older than keep_days."""
+    with get_cursor() as cur:
+        cur.execute("""
+            DELETE FROM download_queue
+            WHERE status IN ('completed', 'failed')
+              AND completed_at < NOW() - (%s || ' days')::interval
+        """, (keep_days,))
+        return cur.rowcount
+
+
+def prune_scan_logs(keep_days: int = 90) -> int:
+    with get_cursor() as cur:
+        cur.execute("""
+            DELETE FROM scan_logs
+            WHERE completed_at < NOW() - (%s || ' days')::interval
+        """, (keep_days,))
+        return cur.rowcount
 
 
 # ---------------------------------------------------------------- logs

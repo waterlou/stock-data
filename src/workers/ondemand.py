@@ -5,6 +5,7 @@ from datetime import date, timedelta
 from src.config import INTRADAY_RETENTION_DAYS
 from src.database import queries
 from src.sources import registry
+from src.sources.base import SourceError
 from src.workers import batch
 from src.workers.batch import FULL_HISTORY_FROM
 
@@ -82,13 +83,16 @@ def _ok(source_code: str, stock_id: int):
 
 
 def _fail(source_code: str, error: Exception):
-    queries.record_source_failure(source_code, str(error))
+    # Only transport-level failures indicate a source outage; per-ticker errors
+    # (bad symbol, no data) must not poison the source's health.
+    if isinstance(error, SourceError):
+        queries.record_source_failure(source_code, str(error))
 
 
 def process_pending(poll_interval: int = 5):
     while True:
         queries.recover_stale_queue_items()
-        item = queries.claim_queue_item("ondemand")
+        item = queries.claim_queue_item()
         if not item:
             time.sleep(poll_interval)
             continue

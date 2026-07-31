@@ -6,7 +6,7 @@ from typing import List
 import requests
 
 from src.models import MarketIndex
-from src.sources.base import DataSource
+from src.sources.base import DataSource, SourceError
 
 logger = logging.getLogger(__name__)
 
@@ -35,8 +35,7 @@ class AastocksSource(DataSource):
             resp.raise_for_status()
             payload = resp.json()
         except Exception as e:
-            logger.warning("AASTOCKS index fetch failed: %s", e)
-            return {"prices": [], "short_selling": [], "indices": []}
+            raise SourceError(f"AASTOCKS index fetch failed: {e}") from e
 
         for item in payload:
             symbol = item.get("symbol", "")

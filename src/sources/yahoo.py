@@ -6,7 +6,7 @@ from typing import List, Optional
 import yfinance as yf
 
 from src.models import CorporateAction, Fundamentals, IntradayBar, MarketIndex, Price
-from src.sources.base import DataSource
+from src.sources.base import DataSource, SourceError
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,8 @@ class YahooSource(DataSource):
                 auto_adjust=False,
             )
         except Exception as e:
-            logger.warning("yfinance intraday failed for %s: %s", ticker, e)
+            raise SourceError(f"yfinance intraday failed for {ticker}: {e}") from e
+        if hist is None or hist.empty:
             return []
 
         bars = []
@@ -58,7 +59,8 @@ class YahooSource(DataSource):
                 auto_adjust=False,
             )
         except Exception as e:
-            logger.warning("yfinance history failed for %s: %s", ticker, e)
+            raise SourceError(f"yfinance history failed for {ticker}: {e}") from e
+        if hist is None or hist.empty:
             return []
 
         prices = []

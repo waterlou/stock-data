@@ -164,8 +164,8 @@ async function loadStocks() {
     ${renderPagination(data.total, s.limit, s.offset, "stockState.offset=__VAL__;loadStocks()")}
     <div class="table-container"><table class="table is-fullwidth is-striped is-hoverable is-size-7">
       <thead><tr><th>Ticker</th><th>Name</th><th>Market</th><th>Watchlist</th><th>Status</th><th>First</th><th>Last</th></tr></thead>
-      <tbody>${data.stocks.map(st => `<tr class="stock-row" onclick="openStock('${st.ticker}')">
-        <td><strong>${st.ticker}</strong></td><td>${st.name||"-"}</td>
+      <tbody>${data.stocks.map(st => `<tr class="stock-row" onclick="openStock('${jsStr(st.ticker)}')">
+        <td><strong>${esc(st.ticker)}</strong></td><td>${esc(st.name)}</td>
         <td><span class="tag is-info">${st.market_code}</span></td>
         <td>${st.watchlist ? "✓" : ""}</td>
         <td><span class="tag ${st.status==="active"?"is-success":"is-danger"}">${st.status}</span></td>
@@ -185,7 +185,7 @@ async function openStock(ticker) {
   const q = await apiFetch(`/stocks/${encodeURIComponent(ticker)}/prices?limit=200`);
   if (q.status === "queued") {
     body.innerHTML = `<div class="notification is-warning">Data not in DB yet — fetch queued.<br>${q.message}<br>
-      <button class="button is-small is-info mt-2" onclick="openStock('${ticker}')">Retry</button></div>`;
+      <button class="button is-small is-info mt-2" onclick="openStock('${jsStr(ticker)}')">Retry</button></div>`;
     return;
   }
   const ca = await apiFetch(`/stocks/${encodeURIComponent(ticker)}/corporate-actions`);
@@ -265,8 +265,8 @@ async function loadWatchlist() {
         <div class="card-content"><div class="table-container"><table class="table is-fullwidth is-striped is-size-7">
           <thead><tr><th>Ticker</th><th>Name</th><th>Market</th><th></th></tr></thead>
           <tbody>${data.stocks.map(st => `<tr>
-            <td><strong>${st.ticker}</strong></td><td>${st.name||"-"}</td><td>${st.market_code}</td>
-            <td><button class="button is-small is-danger is-outlined" onclick="removeWatch('${st.ticker}')">Remove</button></td></tr>`).join("")}
+            <td><strong>${esc(st.ticker)}</strong></td><td>${esc(st.name)}</td><td>${esc(st.market_code)}</td>
+            <td><button class="button is-small is-danger is-outlined" onclick="removeWatch('${jsStr(st.ticker)}')">Remove</button></td></tr>`).join("")}
           </tbody></table></div></div></div></div>
     </div>`;
 }

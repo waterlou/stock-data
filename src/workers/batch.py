@@ -32,8 +32,30 @@ def run_hk_batch():
         queries.log_scan("HK", source.source_code, "batch", "error", error_message=str(e))
         return
 
+    empty = not data.get("prices") and not data.get("short_selling") and not data.get("indices")
+    if empty:
+        logger.error("HK bulk parsed zero rows (page drift or holiday?)")
+        queries.record_source_failure(source.source_code, "bulk fetch returned no rows")
+        queries.log_scan("HK", source.source_code, "batch", "error",
+                         error_message="bulk fetch returned no rows")
+        return
+
     inserted = _save_bulk("HK", data)
     queries.record_source_success(source.source_code)
+
+    # HKEX page has no index data; fill indices from another bulk source if available.
+    for extra in registry.enabled_sources_for("HK"):
+        if extra.source_code == source.source_code or not extra.supports_bulk_daily:
+            continue
+        try:
+            extra_data = extra.fetch_bulk_daily(trade_date)
+            if extra_data.get("indices"):
+                queries.upsert_indices(extra_data["indices"])
+                logger.info("HK indices from %s: %d", extra.source_code, len(extra_data["indices"]))
+                break
+        except Exception as e:
+            logger.warning("HK index fill from %s failed: %s", extra.source_code, e)
+
     queries.log_scan("HK", source.source_code, "batch", "success",
                      items_processed=len(data["prices"]), items_inserted=inserted)
     logger.info("HK batch done: %d prices inserted", inserted)
@@ -82,23 +104,35 @@ def run_us_stock(stock: dict, date_from: date = FULL_HISTORY_FROM, date_to: date
 
 
 def run_source_health_check():
-    """Probe each registered source with a small known fetch; update health."""
-    probes = {"yahoo": ("US", "AAPL", "supports_history"),
-              "tencent": ("CN", "600519.SH", "supports_history"),
-              "akshare": ("CN", "600519.SH", "supports_history"),
-              "hkex": ("HK", "", "supports_bulk_daily"),
-              "aastocks": ("HK", "", "supports_bulk_daily")}
-    for code, (market, ticker, cap) in probes.items():
+    """Probe each registered source with a small known fetch; update health.
+
+    A probe that raises SourceError OR returns too few rows marks the source
+    unhealthy (catches both outages and silent empty responses)."""
+    from src.sources.base import SourceError
+    probes = {"yahoo": ("US", "AAPL", "supports_history", 1),
+              "tencent": ("CN", "600519.SH", "supports_history", 1),
+              "akshare": ("CN", "600519.SH", "supports_history", 1),
+              "hkex": ("HK", "", "supports_bulk_daily", 100),
+              "aastocks": ("HK", "", "supports_bulk_daily", 1)}
+    probe_date = date.today()
+    try:
+        probe_date = get_latest_trading_date() or probe_date  # HKEX page lags realtime
+    except Exception:
+        pass
+    for code, (market, ticker, cap, min_rows) in probes.items():
         source = registry.get_source(code)
         if not source:
             continue
         try:
             if cap == "supports_bulk_daily":
-                source.fetch_bulk_daily(date.today())
+                result = source.fetch_bulk_daily(probe_date)
+                n = len(result.get("indices", []))
             else:
-                source.fetch_prices(ticker, date.today() - timedelta(days=5), date.today())
+                n = len(source.fetch_prices(ticker, probe_date - timedelta(days=5), probe_date))
+            if n < min_rows:
+                raise SourceError(f"probe returned only {n} rows (expected >= {min_rows})")
             queries.record_source_success(code)
-            logger.info("Health check %s: OK", code)
+            logger.info("Health check %s: OK (%d rows)", code, n)
         except Exception as e:
             queries.record_source_failure(code, str(e))
             logger.warning("Health check %s: FAIL (%s)", code, e)

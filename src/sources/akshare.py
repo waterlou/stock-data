@@ -4,7 +4,7 @@ from decimal import Decimal
 from typing import List
 
 from src.models import Price
-from src.sources.base import DataSource
+from src.sources.base import DataSource, SourceError
 from src.sources.normalizer import market_from_ticker
 
 logger = logging.getLogger(__name__)
@@ -43,8 +43,7 @@ class AkShareSource(DataSource):
             else:
                 df = ak.stock_us_daily(symbol=symbol)
         except Exception as e:
-            logger.warning("akshare fetch failed for %s: %s", ticker, e)
-            return []
+            raise SourceError(f"akshare fetch failed for {ticker}: {e}") from e
         if df is None or df.empty:
             return []
 

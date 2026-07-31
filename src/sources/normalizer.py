@@ -12,6 +12,8 @@ def normalize_ticker(value: str, market: str = "") -> str:
     value = value.upper().strip()
     if not value:
         raise ValueError("Empty ticker")
+    if len(value) > 20:
+        raise ValueError(f"Ticker too long: {value[:20]}...")
 
     if value.endswith(".HK"):
         market = "HK"
