@@ -11,7 +11,7 @@ from typing import Optional
 import pytz
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-from fastapi import FastAPI, Query, Request, Header, Depends, HTTPException
+from fastapi import FastAPI, Query, Request, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 
@@ -78,10 +78,41 @@ async def lifespan(app):
 app = FastAPI(title="Stock Data API", version="2.0.0", lifespan=lifespan)
 
 
-def require_api_key(x_api_key: str = Header(default="")):
-    """Optional auth: if API_KEY is configured, mutating endpoints require it."""
-    if API_KEY and x_api_key != API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+def _hash_key(key: str) -> str:
+    import hashlib
+    return hashlib.sha256(key.encode()).hexdigest()
+
+
+def _mask_key(key_hash: str) -> str:
+    return f"sd_{key_hash[:4]}****{key_hash[-4:]}"
+
+
+@app.middleware("http")
+async def api_key_auth(request: Request, call_next):
+    """Enforce API keys on /api/* when the master API_KEY is configured.
+
+    Master key (env) bypasses the DB with full scope; DB keys are scoped
+    read / read-write. Key management (GET /api/keys + mutations) needs
+    read-write. When API_KEY is unset, auth is disabled (dev mode)."""
+    path = request.url.path
+    if not path.startswith("/api/") or not API_KEY:
+        return await call_next(request)
+
+    key = request.headers.get("x-api-key", "")
+    if key and key == API_KEY:
+        return await call_next(request)
+
+    info = queries.validate_api_key(_hash_key(key)) if key else None
+    if info is None:
+        return JSONResponse({"status": "unauthorized",
+                             "message": "Invalid or missing API key"}, status_code=401)
+
+    admin = request.method != "GET" or path == "/api/keys"
+    if admin and info["scope"] != "read-write":
+        return JSONResponse({"status": "forbidden",
+                             "message": "Read-only key cannot access this resource"}, status_code=403)
+    return await call_next(request)
+
 
 # Simple per-client token bucket rate limiter
 _rate_buckets = {}
@@ -164,8 +195,37 @@ def sources_health():
     return {"health": rows_to_json(queries.get_source_health())}
 
 
+@app.get("/api/keys")
+def list_keys():
+    keys = queries.list_api_keys()
+    return {"keys": [{"id": k["id"], "masked": _mask_key(k["key_hash"]), "name": k["name"],
+                      "scope": k["scope"], "active": k["active"],
+                      "created_at": serialize(k["created_at"]),
+                      "last_used_at": serialize(k["last_used_at"])} for k in keys]}
+
+
+@app.post("/api/keys")
+def create_key(body: dict):
+    name = body.get("name", "")
+    scope = body.get("scope", "read")
+    if scope not in ("read", "read-write"):
+        return JSONResponse({"error": "scope must be 'read' or 'read-write'"}, status_code=400)
+    import secrets
+    raw = "sd_" + secrets.token_hex(16)
+    created = queries.create_api_key(name, scope, _hash_key(raw))
+    return {"id": created["id"], "key": raw, "name": name, "scope": scope,
+            "message": "Store this key now — it is shown only once."}
+
+
+@app.delete("/api/keys/{key_id}")
+def delete_key(key_id: int):
+    if not queries.delete_api_key(key_id):
+        return JSONResponse({"error": "Key not found"}, status_code=404)
+    return {"deleted": True, "id": key_id}
+
+
 @app.patch("/api/sources/{market}/{source_code}")
-def update_source(market: str, source_code: str, body: dict, _: None = Depends(require_api_key)):
+def update_source(market: str, source_code: str, body: dict):
     priority = body.get("priority")
     enabled = body.get("enabled")
     if priority is None and enabled is None:
@@ -208,7 +268,7 @@ def watchlist(market: str = ""):
 
 
 @app.post("/api/watchlist")
-def add_to_watchlist(body: dict, _: None = Depends(require_api_key)):
+def add_to_watchlist(body: dict):
     tickers = body.get("tickers", [])
     market = body.get("market", "")
     added = []
@@ -225,7 +285,7 @@ def add_to_watchlist(body: dict, _: None = Depends(require_api_key)):
 
 
 @app.delete("/api/watchlist/{ticker}")
-def remove_from_watchlist(ticker: str, market: str = "", _: None = Depends(require_api_key)):
+def remove_from_watchlist(ticker: str, market: str = ""):
     stock = resolve_stock(ticker, market)
     if not stock:
         return {"removed": False}
@@ -234,7 +294,7 @@ def remove_from_watchlist(ticker: str, market: str = "", _: None = Depends(requi
 
 
 @app.post("/api/watchlist/import")
-def import_watchlist(body: dict, _: None = Depends(require_api_key)):
+def import_watchlist(body: dict):
     text = body.get("text", "")
     market = body.get("market", "")
     added = []

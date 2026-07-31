@@ -168,6 +168,17 @@ CREATE TABLE IF NOT EXISTS scan_logs (
     completed_at    TIMESTAMPTZ
 );
 
+-- API keys (SHA-256 hash stored; raw key shown once at creation)
+CREATE TABLE IF NOT EXISTS api_keys (
+    id           SERIAL PRIMARY KEY,
+    key_hash     VARCHAR(64) UNIQUE NOT NULL,
+    name         VARCHAR(100),
+    scope        VARCHAR(20) NOT NULL DEFAULT 'read',
+    active       BOOLEAN DEFAULT TRUE,
+    created_at   TIMESTAMPTZ DEFAULT NOW(),
+    last_used_at TIMESTAMPTZ
+);
+
 -- Seed reference data
 INSERT INTO markets (market_code, market_name, currency, timezone) VALUES
     ('HK', 'Hong Kong', 'HKD', 'Asia/Hong_Kong'),

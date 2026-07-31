@@ -571,6 +571,47 @@ def _month_offset(d: date, offset: int) -> date:
     return date(total // 12, total % 12 + 1, 1)
 
 
+# ---------------------------------------------------------------- api keys
+
+def create_api_key(name: str, scope: str, key_hash: str) -> Dict:
+    with get_cursor() as cur:
+        cur.execute("""
+            INSERT INTO api_keys (key_hash, name, scope)
+            VALUES (%s, %s, %s)
+            RETURNING id, name, scope, active, created_at
+        """, (key_hash, name, scope))
+        return dict(cur.fetchone())
+
+
+def validate_api_key(key_hash: str) -> Optional[Dict]:
+    """Return {'id','scope'} for an active key, else None."""
+    with get_cursor() as cur:
+        cur.execute("""
+            SELECT id, scope FROM api_keys
+            WHERE key_hash = %s AND active
+        """, (key_hash,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        cur.execute("UPDATE api_keys SET last_used_at = NOW() WHERE id = %s", (row["id"],))
+        return {"id": row["id"], "scope": row["scope"]}
+
+
+def list_api_keys() -> List[Dict]:
+    with get_cursor() as cur:
+        cur.execute("""
+            SELECT id, key_hash, name, scope, active, created_at, last_used_at
+            FROM api_keys ORDER BY id
+        """)
+        return [dict(r) for r in cur.fetchall()]
+
+
+def delete_api_key(key_id: int) -> bool:
+    with get_cursor() as cur:
+        cur.execute("DELETE FROM api_keys WHERE id = %s", (key_id,))
+        return cur.rowcount > 0
+
+
 # ---------------------------------------------------------------- misc
 
 def get_markets() -> List[Dict]:

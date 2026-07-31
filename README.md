@@ -31,6 +31,9 @@ US batch downloads only track stocks on the watchlist. Manage via the **Watchlis
 | `GET /api/sources` | Data sources + per-market priority |
 | `PATCH /api/sources/{market}/{source}` | Set `priority` and/or `enabled` for a source |
 | `GET /api/sources/health` | Source health (consecutive failures) |
+| `GET /api/keys` | List API keys (masked) — requires read-write key |
+| `POST /api/keys` | Create API key (`{"name","scope":"read\|read-write"}`) — returns key once |
+| `DELETE /api/keys/{id}` | Delete API key |
 | `GET /api/stocks` | List stocks (`?search=`, `?market=`, `?watchlist=`) |
 | `GET /api/stocks/{ticker}/prices` | Daily OHLCV (`?from_date=`, `?to_date=`, or `?days=30` for last N trading days) — returns `202` if queued. Add `?format=lean`/`lean_hybrid` for zip downloads |
 | `GET /api/stocks/{ticker}/intraday` | Intraday bars (`?interval=5` for 5m bars, `?days=3`) — Yahoo only, retained 30 days. `?format=lean`/`lean_hybrid` for LEAN zips |
@@ -57,3 +60,4 @@ Ticker params are forgiving: `0700.HK`, `00700.HK`, `700` all work.
 | `INTRADAY_RETENTION_DAYS` | `30` | Intraday bars deleted after N days |
 | `INTRADAY_RECENCY_MINUTES` | `15` | Intraday re-fetch cooldown (min) |
 | `RATE_LIMIT_PER_MINUTE` | `120` | API rate limit per client |
+| `API_KEY` | empty | Master API key. When set, all `/api/*` require an `X-API-Key` header (master or a DB-created key). When empty, auth is disabled. |

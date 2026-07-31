@@ -52,8 +52,19 @@
       <a class="navbar-item" data-tab="queue" onclick="switchTab('queue')">Queue</a>
       <a class="navbar-item" data-tab="logs" onclick="switchTab('logs')">Logs</a>
     </div>
+    <div class="navbar-end">
+      <div class="navbar-item" id="key-nav" style="display:none">
+        <input class="input is-small" id="key-input" type="password" placeholder="API Key" style="width:220px">
+        <button class="button is-small is-info ml-1" onclick="saveKey()">Unlock</button>
+        <button class="button is-small is-light ml-1" onclick="openKeys()">Keys</button>
+      </div>
+    </div>
   </div>
 </nav>
+
+<div id="auth-banner" style="display:none;background:#7f1d1d;color:#fff;padding:0.6rem 1.5rem;font-size:0.9rem">
+  <strong>Authentication required.</strong> Enter an API key above to access data.
+</div>
 
 <section class="section">
   <div id="tab-dashboard" class="tab-content is-active"></div>
@@ -76,14 +87,100 @@
   </div>
 </div>
 
+<div class="modal" id="key-modal">
+  <div class="modal-background" onclick="closeKeys()"></div>
+  <div class="modal-card">
+    <header class="modal-card-head">
+      <p class="modal-card-title">API Keys</p>
+      <button class="delete" onclick="closeKeys()"></button>
+    </header>
+    <section class="modal-card-body">
+      <div class="field is-grouped">
+        <div class="control"><input class="input is-small" id="key-name" type="text" placeholder="Name (e.g. AI agent)"></div>
+        <div class="control"><div class="select is-small"><select id="key-scope">
+          <option value="read">read</option>
+          <option value="read-write">read-write</option></select></div></div>
+        <div class="control"><button class="button is-small is-primary" onclick="newKey()">Create Key</button></div>
+      </div>
+      <div id="key-result"></div>
+      <div id="keys-list"></div>
+    </section>
+  </div>
+</div>
+
 <script>
 const API = "/api";
+let apiKey = localStorage.getItem("sd_api_key") || "";
 
 async function apiFetch(path, opts) {
-  const r = await fetch(`${API}${path}`, opts);
+  opts = opts || {};
+  const headers = Object.assign({}, opts.headers || {});
+  if (apiKey) headers["X-API-Key"] = apiKey;
+  const r = await fetch(`${API}${path}`, Object.assign({}, opts, { headers }));
   const data = await r.json().catch(() => ({}));
+  if (r.status === 401 || r.status === 403) {
+    document.getElementById("auth-banner").style.display = "block";
+    throw new Error(data.message || "Authentication required");
+  }
   if (!r.ok && !data.status) throw new Error(JSON.stringify(data));
   return data;
+}
+
+function saveKey() {
+  apiKey = document.getElementById("key-input").value.trim();
+  if (apiKey) localStorage.setItem("sd_api_key", apiKey);
+  else localStorage.removeItem("sd_api_key");
+  document.getElementById("auth-banner").style.display = "none";
+  toast(apiKey ? "API key saved" : "API key cleared");
+  loadDashboard(); loadStocks(); loadWatchlist(); loadIndices(); loadShort(); loadQueue(); loadLogs();
+}
+
+function checkAuth() {
+  // Probe with current key; if 401 shows the key input, else hide it.
+  const probe = apiKey || "probe-missing-key";
+  fetch("/api/overview", { headers: { "X-API-Key": probe } }).then(r => {
+    const needs = r.status === 401;
+    document.getElementById("key-nav").style.display = needs ? "" : "none";
+    document.getElementById("auth-banner").style.display = needs && !apiKey ? "" : "none";
+  }).catch(() => {});
+}
+
+function openKeys() {
+  document.getElementById("key-modal").classList.add("is-active");
+  loadKeys();
+}
+function closeKeys() { document.getElementById("key-modal").classList.remove("is-active"); }
+
+async function loadKeys() {
+  const data = await apiFetch("/keys");
+  document.getElementById("keys-list").innerHTML = `
+    <div class="table-container"><table class="table is-fullwidth is-striped is-size-7">
+      <thead><tr><th>ID</th><th>Name</th><th>Key</th><th>Scope</th><th>Created</th><th>Last Used</th><th></th></tr></thead>
+      <tbody>${data.keys.map(k => `<tr>
+        <td>${k.id}</td><td>${esc(k.name)||"-"}</td><td><code>${esc(k.masked)}</code></td>
+        <td><span class="tag ${k.scope==="read-write"?"is-warning":"is-light"}">${k.scope}</span></td>
+        <td class="is-size-7">${k.created_at||"-"}</td><td class="is-size-7">${k.last_used_at||"-"}</td>
+        <td><button class="button is-small is-danger is-outlined" onclick="delKey(${k.id})">Delete</button></td></tr>`).join("")}
+      </tbody></table></div>`;
+}
+
+async function newKey() {
+  const name = document.getElementById("key-name").value.trim();
+  const scope = document.getElementById("key-scope").value;
+  const data = await apiFetch("/keys", { method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, scope }) });
+  document.getElementById("key-result").innerHTML =
+    `<div class="notification is-success"><p>Copy this key now — it is shown only once:</p>
+     <p><code style="word-break:break-all">${esc(data.key)}</code></p>
+     <button class="button is-small mt-2" onclick="navigator.clipboard.writeText('${jsStr(data.key)}')">Copy</button></div>`;
+  loadKeys();
+}
+
+async function delKey(id) {
+  if (!confirm("Delete this API key?")) return;
+  await apiFetch(`/keys/${id}`, { method: "DELETE" });
+  loadKeys();
 }
 
 function fmt(v, d = 4) {
@@ -363,6 +460,8 @@ async function loadLogs() {
 }
 
 // ---------- Init ----------
+if (apiKey) document.getElementById("key-input").value = apiKey;
+checkAuth();
 loadDashboard();
 loadStocks();
 loadWatchlist();
