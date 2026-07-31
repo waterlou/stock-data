@@ -21,6 +21,45 @@ def upsert_stock(market_code: str, ticker: str, name: str = "") -> int:
         return cur.fetchone()[0]
 
 
+def upsert_stocks_bulk(market_code: str, ticker_names: List[Tuple[str, str]]) -> Dict[str, int]:
+    """Upsert many stocks in a single statement. ticker_names = [(ticker, name), ...].
+
+    Returns {ticker: id} for every ticker in the batch. Duplicate tickers in the
+    batch are collapsed (last name wins)."""
+    if not ticker_names:
+        return {}
+    rows = list({t: n for t, n in ticker_names}.items())
+    values_sql = ", ".join(["(%s, %s, %s, NOW())"] * len(rows))
+    params = [v for t, n in rows for v in (market_code, t, n)]
+    sql = f"""
+        INSERT INTO stocks (market_code, ticker, name, updated_at)
+        VALUES {values_sql}
+        ON CONFLICT (market_code, ticker) DO UPDATE SET
+            name = COALESCE(NULLIF(EXCLUDED.name, ''), stocks.name),
+            updated_at = NOW()
+        RETURNING ticker, id
+    """
+    with get_cursor() as cur:
+        cur.execute(sql, params)
+        return {row["ticker"]: row["id"] for row in cur.fetchall()}
+
+
+def refresh_stock_dates_bulk(stock_ids: List[int]):
+    """Set first_date/last_date/last_fetched_at for many stocks in one UPDATE."""
+    if not stock_ids:
+        return
+    with get_cursor() as cur:
+        cur.execute("""
+            UPDATE stocks SET
+                first_date = sub.min_d, last_date = sub.max_d,
+                last_fetched_at = NOW(), updated_at = NOW()
+            FROM (SELECT stock_id, MIN(trade_date) AS min_d, MAX(trade_date) AS max_d
+                  FROM daily_prices WHERE stock_id = ANY(%s)
+                  GROUP BY stock_id) sub
+            WHERE stocks.id = sub.stock_id
+        """, (list(stock_ids),))
+
+
 def get_stock_by_ticker(market_code: str, ticker: str) -> Optional[Dict]:
     with get_cursor() as cur:
         cur.execute("""
@@ -321,6 +360,20 @@ def recently_fetched(market_code: str, ticker: str, data_type: str, hours: float
             LIMIT 1
         """, (market_code, ticker, data_type, hours))
         return cur.fetchone() is not None
+
+
+def last_fetch_status(market_code: str, ticker: str, data_type: str) -> Optional[Dict]:
+    """Most recent completed/failed queue attempt for (market, ticker, type)."""
+    with get_cursor() as cur:
+        cur.execute("""
+            SELECT status, completed_at, error_message FROM download_queue
+            WHERE market_code = %s AND ticker = %s AND data_type = %s
+              AND status IN ('completed', 'failed')
+            ORDER BY completed_at DESC NULLS LAST, id DESC
+            LIMIT 1
+        """, (market_code, ticker, data_type))
+        row = cur.fetchone()
+        return dict(row) if row else None
 
 
 # ---------------------------------------------------------------- queue

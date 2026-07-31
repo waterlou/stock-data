@@ -152,16 +152,18 @@ def run_source_health_check():
 
 def _save_bulk(market: str, data: dict) -> int:
     inserted = 0
+    tickers = [(p.ticker, "") for p in data["prices"]]
+    tickers += [(e.ticker, "") for e in data["short_selling"]]
+    stock_ids = queries.upsert_stocks_bulk(market, tickers)
     for price in data["prices"]:
-        price.stock_id = queries.upsert_stock(market, price.ticker)
+        price.stock_id = stock_ids[price.ticker]
     inserted += queries.upsert_prices(data["prices"])
     for entry in data["short_selling"]:
-        entry.stock_id = queries.upsert_stock(market, entry.ticker)
+        entry.stock_id = stock_ids[entry.ticker]
     inserted += queries.upsert_short_selling(data["short_selling"])
     queries.upsert_indices(data.get("indices", []))
-    for stock_id in {p.stock_id for p in data["prices"]}:
-        queries.mark_fetched(stock_id)
-        _refresh_stock_dates(stock_id)
+    # Same as per-stock mark_fetched + _refresh_stock_dates, but one UPDATE.
+    queries.refresh_stock_dates_bulk([stock_ids[p.ticker] for p in data["prices"]])
     return inserted
 
 

@@ -38,6 +38,8 @@ def process_queue_item(item: dict):
             lookback_months=max(1, INTRADAY_RETENTION_DAYS // 30 + 1))
         try:
             bars = source.fetch_intraday(ticker, interval, start, date.today())
+            if not bars:
+                raise RuntimeError(f"No intraday data returned for {ticker}")
             for b in bars:
                 b.stock_id = stock_id
             queries.upsert_intraday_bars(bars)
@@ -58,6 +60,8 @@ def process_queue_item(item: dict):
             if not source:
                 raise RuntimeError(f"No history source for {market}")
             prices = source.fetch_prices(ticker, FULL_HISTORY_FROM, date.today())
+            if not prices:
+                raise RuntimeError(f"No price data returned for {ticker}")
             for p in prices:
                 p.stock_id = stock_id
             queries.upsert_prices(prices)
