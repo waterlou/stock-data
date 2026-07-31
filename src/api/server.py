@@ -187,6 +187,7 @@ def stock_prices(
     market: str = "",
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
+    days: Optional[int] = Query(default=None, ge=1, le=1000),
     limit: int = Query(default=100, le=1000),
     offset: int = Query(default=0, ge=0),
 ):
@@ -196,8 +197,12 @@ def stock_prices(
         queries.enqueue(m, normalize_ticker(ticker, m), "price")
         return {"status": "queued", "message": "Data is being fetched. Retry in ~30s."}, 202
 
-    fd = date.fromisoformat(from_date) if from_date else None
-    td = date.fromisoformat(to_date) if to_date else None
+    if days:
+        fd = td = None
+        limit, offset = days, 0
+    else:
+        fd = date.fromisoformat(from_date) if from_date else None
+        td = date.fromisoformat(to_date) if to_date else None
     if not queries.has_prices(stock["id"]) and not queries.recently_fetched(
             stock["market_code"], stock["ticker"], "price"):
         queries.enqueue(stock["market_code"], stock["ticker"], "price")

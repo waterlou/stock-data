@@ -30,7 +30,7 @@ US batch downloads only track stocks on the watchlist. Manage via the **Watchlis
 | `GET /api/markets` | Available markets (HK, US) |
 | `GET /api/sources` | Data sources + per-market priority |
 | `GET /api/stocks` | List stocks (`?search=`, `?market=`, `?watchlist=`) |
-| `GET /api/stocks/{ticker}/prices` | Daily OHLCV (`?from_date=`, `?to_date=`) — returns `202` if queued |
+| `GET /api/stocks/{ticker}/prices` | Daily OHLCV (`?from_date=`, `?to_date=`, or `?days=30` for last N trading days) — returns `202` if queued |
 | `GET /api/stocks/{ticker}/corporate-actions` | Splits & dividends |
 | `GET /api/stocks/{ticker}/fundamentals` | Market cap, P/E, EPS, sector |
 | `GET /api/indices` | Market indices (HSI, S&P 500) |
