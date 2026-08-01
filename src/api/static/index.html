@@ -144,7 +144,7 @@
     <header class="modal-card-head">
       <p class="modal-card-title" id="modal-title">Stock Detail</p>
       <button class="button is-small is-light mr-2" onclick="refreshStock(_currentTicker)">🔄 Refresh</button>
-      <button class="button is-small is-light mr-2" onclick="toggleIndicatorPanel()">⚙ Indicators</button>
+      <button class="button is-small is-light mr-2" onclick="toggleIndicatorPanel()">⚙ Toggles</button>
       <button class="delete" onclick="closeModal()"></button>
     </header>
     <section class="modal-card-body" id="modal-body"></section>
@@ -155,15 +155,12 @@
   <div class="modal-background" onclick="closeIndicatorModal()"></div>
   <div class="modal-card" style="width:480px">
     <header class="modal-card-head">
-      <p class="modal-card-title">Chart Indicators</p>
+      <p class="modal-card-title">Indicator Settings</p>
       <button class="delete" onclick="closeIndicatorModal()"></button>
     </header>
     <section class="modal-card-body">
-      <div class="field has-addons">
-        <div class="control is-expanded"><div class="select is-fullwidth"><select id="indicator-select"></select></div></div>
-        <div class="control"><button class="button is-info" onclick="addIndicator()">Add</button></div>
-      </div>
-      <div id="indicator-list"><p class="has-text-grey">No indicators selected.</p></div>
+      <p class="is-size-7 has-text-grey mb-2">Check indicators to show as quick toggles on the chart. Use ▲▼ to order them.</p>
+      <div id="indicator-settings"></div>
     </section>
   </div>
 </div>
@@ -428,7 +425,8 @@ async function openStock(ticker) {
       ${stale ? ' &nbsp;·&nbsp; <span class="has-text-danger"><strong>STALE</strong></span>' : ""}
     </div>
     <div class="level-right"><button class="button is-small is-info" onclick="refreshStock('${jsStr(ticker)}')">🔄 Fetch Latest</button></div>
-  </div></div>`;
+  </div></div>
+  <div class="column is-12"><div id="toggle-pills" class="field is-grouped is-grouped-multiline"></div></div>`;
   if (f.fundamentals) {
     const fu = f.fundamentals;
     html += `<div class="column is-12"><div class="box"><p>
@@ -456,6 +454,7 @@ async function openStock(ticker) {
   }
   html += "</div>";
   body.innerHTML = html;
+  renderTogglePills();
   if (q.prices && q.prices.length) setTimeout(() => buildChart(q.prices), 100);
 }
 
@@ -463,7 +462,6 @@ async function openStock(ticker) {
 
 let _chart = null;
 let _chartPrices = [];
-let _activeIndicators = JSON.parse(localStorage.getItem("sd_indicators") || "[]");
 
 // Indicator definitions. pane: 'main' (overlay on candlestick), 'volume', or 'sub' (own pane).
 const INDICATORS = {
@@ -491,55 +489,80 @@ const INDICATORS = {
   RSI:    { name: "RSI",      pane: "sub",    color: "#a855f7", params: { period: 14 }, calc: calcRSI },
   MACD:   { name: "MACD",     pane: "sub",    color: "#3b82f6", params: { fast: 12, slow: 26, signal: 9 }, calc: calcMACD },
 };
-// Indicators listed but not yet implemented (shown disabled in the picker).
+// Indicators listed but not yet implemented.
 const INDICATORS_SOON = ["CDP", "MIKE", "NINE", "PPSW", "WF", "CKS", "IC", "VMAP"];
+
+// Which indicators are active on the chart right now (keys).
+let _activeIndicators = JSON.parse(localStorage.getItem("sd_active_inds") || '["VOL","RSI","MACD"]');
+// Which indicators appear as quick-toggle pills, and in what order.
+let _togglePrefs = loadTogglePrefs();
+function loadTogglePrefs() {
+  const saved = localStorage.getItem("sd_toggle_prefs");
+  if (saved) {
+    try { return JSON.parse(saved); } catch (e) { /* fall through */ }
+  }
+  const visible = ["MA", "EMA", "BOLL", "VOL", "RSI", "MACD"];
+  return Object.keys(INDICATORS).map(k => ({ key: k, visible: visible.includes(k) }));
+}
+function persistTogglePrefs() { localStorage.setItem("sd_toggle_prefs", JSON.stringify(_togglePrefs)); }
+function persistActiveIndicators() { localStorage.setItem("sd_active_inds", JSON.stringify(_activeIndicators)); }
 
 function toggleIndicatorPanel() {
   document.getElementById("indicator-modal").classList.toggle("is-active");
-  renderIndicatorPicker();
-  renderIndicatorList();
+  renderIndicatorSettings();
 }
 function closeIndicatorModal() { document.getElementById("indicator-modal").classList.remove("is-active"); }
 
-function renderIndicatorPicker() {
-  const sel = document.getElementById("indicator-select");
-  sel.innerHTML = Object.keys(INDICATORS).map(k =>
-    `<option value="${k}">${INDICATORS[k].name} (${INDICATORS[k].pane})</option>`).join("") +
-    INDICATORS_SOON.map(k => `<option value="${k}" disabled>${k} (coming soon)</option>`).join("");
+// Settings list: checkbox (visible as quick toggle) + reorder.
+function renderIndicatorSettings() {
+  const el = document.getElementById("indicator-settings");
+  el.innerHTML = _togglePrefs.map((p, i) => {
+    const def = INDICATORS[p.key];
+    if (!def) return "";
+    return `<div class="level is-mobile" style="border-bottom:1px solid #eee;padding:5px 0">
+      <div class="level-left">
+        <label class="checkbox"><input type="checkbox" ${p.visible ? "checked" : ""} onchange="setToggleVisible('${p.key}', this.checked)">
+          <span style="color:${def.color}">■</span> ${def.name}</label>
+      </div>
+      <div class="level-right">
+        <button class="button is-small is-static" ${i===0?"disabled":""} onclick="movePref(${i},-1)">▲</button>
+        <button class="button is-small is-static" ${i===_togglePrefs.length-1?"disabled":""} onclick="movePref(${i},1)">▼</button>
+      </div>
+    </div>`;
+  }).join("");
+}
+function setToggleVisible(key, visible) {
+  const p = _togglePrefs.find(x => x.key === key);
+  if (p) { p.visible = visible; persistTogglePrefs(); }
+  if (_chartPrices.length) renderTogglePills();
+}
+function movePref(i, dir) {
+  const j = i + dir;
+  if (j < 0 || j >= _togglePrefs.length) return;
+  const t = _togglePrefs[i]; _togglePrefs[i] = _togglePrefs[j]; _togglePrefs[j] = t;
+  persistTogglePrefs();
+  renderIndicatorSettings();
+  if (_chartPrices.length) renderTogglePills();
 }
 
-function renderIndicatorList() {
-  const el = document.getElementById("indicator-list");
-  el.innerHTML = _activeIndicators.length
-    ? _activeIndicators.map((ind, i) => {
-        const def = INDICATORS[ind.key];
-        if (!def) return "";
-        const params = Object.entries(def.params).map(([k, v]) => `${k}=${ind.params ? ind.params[k] ?? v : v}`).join(" ");
-        return `<div class="level is-mobile" style="border-bottom:1px solid #eee;padding:4px 0">
-          <div class="level-left"><div><strong>${def.name}</strong> <span class="is-size-7 has-text-grey">${params}</span></div></div>
-          <div class="level-right"><button class="button is-small is-danger is-outlined" onclick="removeIndicator(${i})">Remove</button></div>
-        </div>`;
-      }).join("")
-    : '<p class="has-text-grey">No indicators selected. Volume is enabled by default when added.</p>';
+// Quick-toggle pills shown on the chart.
+function renderTogglePills() {
+  const el = document.getElementById("toggle-pills");
+  if (!el) return;
+  el.innerHTML = _togglePrefs.filter(p => p.visible).map(p => {
+    const def = INDICATORS[p.key];
+    const on = _activeIndicators.includes(p.key);
+    return `<button class="button is-small ${on ? "is-info" : "is-light"}" style="${on ? "" : `border:1px solid ${def.color}`}"
+      onclick="toggleIndicator('${p.key}')"><span style="color:${def.color}">■</span> ${def.name}</button>`;
+  }).join(" ") + ` <button class="button is-small is-light" onclick="toggleIndicatorPanel()">⚙</button>`;
 }
-
-function addIndicator() {
-  const key = document.getElementById("indicator-select").value;
-  const def = INDICATORS[key];
-  if (!def || _activeIndicators.some(i => i.key === key)) return;
-  _activeIndicators.push({ key, params: Object.assign({}, def.params) });
-  persistIndicators();
-  renderIndicatorList();
+function toggleIndicator(key) {
+  const i = _activeIndicators.indexOf(key);
+  if (i >= 0) _activeIndicators.splice(i, 1);
+  else _activeIndicators.push(key);
+  persistActiveIndicators();
+  renderTogglePills();
   if (_chartPrices.length) buildChart(_chartPrices);
-}
-function removeIndicator(idx) {
-  _activeIndicators.splice(idx, 1);
-  persistIndicators();
-  renderIndicatorList();
-  if (_chartPrices.length) buildChart(_chartPrices);
-}
-function persistIndicators() {
-  localStorage.setItem("sd_indicators", JSON.stringify(_activeIndicators));
 }
 
 // ---- indicator calculations (each returns [{label, kind:'line'|'histogram', color, data:[{time,value}]}]) ----
@@ -836,7 +859,7 @@ function buildChart(prices) {
   candleSeries.setData(candleData);
 
   // Determine pane layout: pane 0 main, then volume, then each sub indicator.
-  const enabled = _activeIndicators.map(i => INDICATORS[i.key]).filter(Boolean);
+  const enabled = _activeIndicators.map(k => INDICATORS[k]).filter(Boolean);
   const volumeOn = enabled.some(d => d.pane === "volume");
   const subs = enabled.filter(d => d.pane === "sub");
 
@@ -846,11 +869,11 @@ function buildChart(prices) {
   subs.forEach((_, i) => { _chart.addPane(paneCount + i); subPanes.push(paneCount + i); });
 
   // overlay indicators on main pane
-  for (const ind of _activeIndicators) {
-    const def = INDICATORS[ind.key];
+  for (const key of _activeIndicators) {
+    const def = INDICATORS[key];
     if (!def || def.pane !== "main") continue;
     let seriesList;
-    try { seriesList = def.calc(prices, ind.params, times); }
+    try { seriesList = def.calc(prices, def.params, times); }
     catch (e) { continue; }
     for (const s of seriesList) {
       const series = _chart.addSeries(s.kind === "histogram" ? LightweightCharts.HistogramSeries : LightweightCharts.LineSeries,
@@ -861,15 +884,14 @@ function buildChart(prices) {
 
   if (volumeOn) {
     const vdef = INDICATORS.VOL;
-    const list = vdef.calc(prices, {}, times);
+    const list = vdef.calc(prices, vdef.params, times);
     const series = _chart.addSeries(LightweightCharts.HistogramSeries, { priceScaleId: "", priceFormat: { type: "volume" }, priceLineVisible: false, lastValueVisible: false }, volumePane);
     series.setData(list[0].data);
   }
 
   subs.forEach((sub, si) => {
-    const ind = _activeIndicators.find(i => INDICATORS[i.key] === sub);
     let list;
-    try { list = sub.calc(prices, ind.params, times); }
+    try { list = sub.calc(prices, sub.params, times); }
     catch (e) { return; }
     for (const s of list) {
       const series = _chart.addSeries(s.kind === "histogram" ? LightweightCharts.HistogramSeries : LightweightCharts.LineSeries,
