@@ -143,6 +143,7 @@
   <div class="modal-card">
     <header class="modal-card-head">
       <p class="modal-card-title" id="modal-title">Stock Detail</p>
+      <button class="button is-small is-light mr-2" onclick="refreshStock(_currentTicker)">🔄 Refresh</button>
       <button class="button is-small is-light mr-2" onclick="toggleIndicatorPanel()">⚙ Indicators</button>
       <button class="delete" onclick="closeModal()"></button>
     </header>
@@ -377,22 +378,57 @@ async function loadStocks() {
   }
 }
 
+let _currentTicker = null;
+
+async function refreshStock(ticker) {
+  if (!ticker) return;
+  toast(`Refreshing ${ticker}...`);
+  try {
+    await apiFetch(`/stocks/${encodeURIComponent(ticker)}/prices?force=1`);
+  } catch (e) { /* 202 queued is expected */ }
+  setTimeout(() => openStock(ticker), 20000);
+}
+
 async function openStock(ticker) {
+  _currentTicker = ticker;
   document.getElementById("modal-title").textContent = `${ticker}`;
   const body = document.getElementById("modal-body");
   body.innerHTML = '<p class="has-text-grey">Loading...</p>';
   document.getElementById("stock-modal").classList.add("is-active");
 
+  let meta = {};
+  try {
+    const m = await apiFetch(`/stocks?search=${encodeURIComponent(ticker)}&limit=10`);
+    const st = (m.stocks || []).find(s => s.ticker.toLowerCase() === ticker.toLowerCase());
+    if (st) meta = st;
+  } catch (e) {}
+
   const q = await apiFetch(`/stocks/${encodeURIComponent(ticker)}/prices?limit=500`);
   if (q.status === "queued") {
-    body.innerHTML = `<div class="notification is-warning">Data not in DB yet — fetch queued.<br>${q.message}<br>
-      <button class="button is-small is-info mt-2" onclick="openStock('${jsStr(ticker)}')">Retry</button></div>`;
+    body.innerHTML = `<div class="notification is-warning">${esc(q.message)}<br>
+      <button class="button is-small is-info mt-2" onclick="refreshStock('${jsStr(ticker)}')">Fetch Now</button></div>`;
+    return;
+  }
+  if (q.status === "failed") {
+    body.innerHTML = `<div class="notification is-danger"><strong>Last fetch failed.</strong><br>${esc(q.message)}<br>
+      <button class="button is-small is-warning mt-2" onclick="refreshStock('${jsStr(ticker)}')">Retry Now</button></div>`;
     return;
   }
   const ca = await apiFetch(`/stocks/${encodeURIComponent(ticker)}/corporate-actions`);
   const f = await apiFetch(`/stocks/${encodeURIComponent(ticker)}/fundamentals`);
 
   let html = `<div class="columns is-multiline">`;
+  const lastFetched = meta.last_fetched_at;
+  const lastDate = q.prices && q.prices.length ? q.prices[0].trade_date : null;
+  const stale = lastFetched && (Date.now() - new Date(lastFetched).getTime()) > 24 * 3600 * 1000;
+  html += `<div class="column is-12"><div class="level is-mobile">
+    <div class="level-left is-size-7 has-text-grey">
+      ${lastFetched ? `Last fetched: <strong>${new Date(lastFetched).toLocaleString()}</strong>` : "<strong>Never fetched</strong>"}
+      ${lastDate ? ` &nbsp;·&nbsp; Latest data: ${lastDate}` : ""}
+      ${stale ? ' &nbsp;·&nbsp; <span class="has-text-danger"><strong>STALE</strong></span>' : ""}
+    </div>
+    <div class="level-right"><button class="button is-small is-info" onclick="refreshStock('${jsStr(ticker)}')">🔄 Fetch Latest</button></div>
+  </div></div>`;
   if (f.fundamentals) {
     const fu = f.fundamentals;
     html += `<div class="column is-12"><div class="box"><p>
@@ -408,6 +444,8 @@ async function openStock(ticker) {
         <tbody>${q.prices.map(p => `<tr><td>${p.trade_date}</td><td>${fmtPrice(p.open)}</td><td>${fmtPrice(p.high)}</td><td>${fmtPrice(p.low)}</td>
           <td><strong>${fmtPrice(p.close)}</strong></td><td>${fmtPrice(p.adj_close)}</td><td>${fmt(p.volume)}</td><td><span class="tag is-light">${p.source_code}</span></td></tr>`).join("")}</tbody>
       </table></div></div>`;
+  } else {
+    html += `<div class="column is-12"><p class="has-text-grey">No price data for ${esc(ticker)}.</p></div>`;
   }
   if (ca.actions && ca.actions.length) {
     html += `<div class="column is-12"><h5 class="title is-6">Corporate Actions</h5>
@@ -768,6 +806,7 @@ function calcMACD(prices, params, times) {
 // ---- chart build ----
 
 function buildChart(prices) {
+  prices = [...prices].reverse(); // API returns newest-first; chart needs ascending
   _chartPrices = prices;
   const el = document.getElementById("price-chart");
   if (!el) return;
@@ -856,10 +895,17 @@ async function loadWatchlist() {
     const data = await apiFetch(q);
     document.getElementById("watchlist-table").innerHTML = data.stocks.length
       ? `<div class="table-container"><table class="table is-fullwidth is-striped is-size-7">
-          <thead><tr><th>Ticker</th><th>Name</th><th>Market</th><th></th></tr></thead>
-          <tbody>${data.stocks.map(st => `<tr>
-            <td><strong>${esc(st.ticker)}</strong></td><td>${esc(st.name)}</td><td>${esc(st.market_code)}</td>
-            <td><button class="button is-small is-danger is-outlined" onclick="removeWatch('${jsStr(st.ticker)}')">Remove</button></td></tr>`).join("")}
+          <thead><tr><th>Ticker</th><th>Name</th><th>Market</th><th>Last Date</th><th>Fetched</th><th></th></tr></thead>
+          <tbody>${data.stocks.map(st => {
+            const fetchedAgo = st.last_fetched_at
+              ? Math.floor((Date.now() - new Date(st.last_fetched_at).getTime()) / 3600000) + "h ago"
+              : "never";
+            return `<tr>
+              <td><strong>${esc(st.ticker)}</strong></td><td>${esc(st.name)}</td><td>${esc(st.market_code)}</td>
+              <td>${st.last_date||"-"}</td><td class="is-size-7 has-text-grey">${fetchedAgo}</td>
+              <td><button class="button is-small is-info is-outlined" onclick="openStock('${jsStr(st.ticker)}')">View</button>
+              <button class="button is-small is-danger is-outlined" onclick="removeWatch('${jsStr(st.ticker)}')">Remove</button></td></tr>`;
+          }).join("")}
           </tbody></table></div>`
       : '<p class="has-text-grey">No watchlist stocks yet. Add some on the left.</p>';
   } catch (e) {
@@ -874,6 +920,8 @@ async function addWatchlist() {
   const r = await apiFetch("/watchlist", { method: "POST", headers: {"Content-Type":"application/json"},
     body: JSON.stringify({ tickers, market: document.getElementById("wl-market").value }) });
   toast(`Added: ${r.added.map(esc).join(", ")}`);
+  // Trigger immediate download for newly added tickers.
+  r.added.forEach(t => apiFetch(`/stocks/${encodeURIComponent(t)}/prices?force=1`).catch(() => {}));
   loadWatchlist();
 }
 async function importWatchlist() {
@@ -882,6 +930,7 @@ async function importWatchlist() {
   const r = await apiFetch("/watchlist/import", { method: "POST", headers: {"Content-Type":"application/json"},
     body: JSON.stringify({ text, market: document.getElementById("wl-market").value }) });
   toast(`Imported: ${r.added.map(esc).join(", ")}`);
+  r.added.forEach(t => apiFetch(`/stocks/${encodeURIComponent(t)}/prices?force=1`).catch(() => {}));
   loadWatchlist();
 }
 async function removeWatch(ticker) {
