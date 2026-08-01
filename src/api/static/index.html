@@ -829,7 +829,11 @@ function calcMACD(prices, params, times) {
 // ---- chart build ----
 
 function buildChart(prices) {
-  prices = [...prices].reverse(); // API returns newest-first; chart needs ascending
+  // Normalize to ascending once. API returns newest-first, but rebuilds from
+  // _chartPrices are already ascending — don't double-reverse.
+  if (prices.length > 1 && String(prices[0].trade_date) > String(prices[prices.length - 1].trade_date)) {
+    prices = [...prices].reverse();
+  }
   _chartPrices = prices;
   const el = document.getElementById("price-chart");
   if (!el) return;
