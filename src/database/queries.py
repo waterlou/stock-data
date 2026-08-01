@@ -159,13 +159,24 @@ def get_prices(stock_id: int, from_date: Optional[date] = None,
         conditions.append("trade_date <= %s")
         params.append(to_date)
     where = " AND ".join(conditions)
+    cols = ("trade_date, stock_id, source_code, open, high, low, close, adj_close,"
+            " volume, prev_close, bid, ask, currency")
     with get_cursor() as cur:
-        cur.execute(f"""
-            SELECT trade_date, stock_id, source_code, open, high, low, close, adj_close,
-                   volume, prev_close, bid, ask, currency
-            FROM daily_prices WHERE {where}
-            ORDER BY trade_date DESC LIMIT %s OFFSET %s
-        """, (*params, limit, offset))
+        if from_date or to_date:
+            # Date range: plain ascending order.
+            cur.execute(f"""
+                SELECT {cols} FROM daily_prices WHERE {where}
+                ORDER BY trade_date ASC LIMIT %s OFFSET %s
+            """, (*params, limit, offset))
+        else:
+            # "Last N" mode: newest-first in the inner query (so LIMIT takes the
+            # most recent rows), then flip to ascending for time-series consumers.
+            cur.execute(f"""
+                SELECT * FROM (
+                    SELECT {cols} FROM daily_prices WHERE stock_id = %s
+                    ORDER BY trade_date DESC LIMIT %s OFFSET %s
+                ) sub ORDER BY trade_date ASC
+            """, (stock_id, limit, offset))
         rows = [dict(r) for r in cur.fetchall()]
         cur.execute(f"SELECT COUNT(*) FROM daily_prices WHERE {where}", params)
         total = cur.fetchone()[0]
@@ -565,7 +576,7 @@ def get_intraday_bars(stock_id: int, interval_min: int, from_date: Optional[date
         cur.execute(f"""
             SELECT date_time, stock_id, source_code, interval_min, open, high, low, close, volume
             FROM intraday_prices WHERE {where}
-            ORDER BY date_time DESC LIMIT %s OFFSET %s
+            ORDER BY date_time ASC LIMIT %s OFFSET %s
         """, (*params, limit, offset))
         rows = [dict(r) for r in cur.fetchall()]
         cur.execute(f"SELECT COUNT(*) FROM intraday_prices WHERE {where}", params)

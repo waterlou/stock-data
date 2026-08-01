@@ -416,7 +416,7 @@ async function openStock(ticker) {
 
   let html = `<div class="columns is-multiline">`;
   const lastFetched = meta.last_fetched_at;
-  const lastDate = q.prices && q.prices.length ? q.prices[0].trade_date : null;
+  const lastDate = q.prices && q.prices.length ? q.prices[q.prices.length - 1].trade_date : null;
   const stale = lastFetched && (Date.now() - new Date(lastFetched).getTime()) > 24 * 3600 * 1000;
   html += `<div class="column is-12"><div class="level is-mobile">
     <div class="level-left is-size-7 has-text-grey">
@@ -436,10 +436,11 @@ async function openStock(ticker) {
   }
   if (q.prices && q.prices.length) {
     html += `<div class="column is-12"><div class="chart-container"><div id="price-chart"></div></div></div>`;
+    const tablePrices = [...q.prices].reverse(); // newest-first for the table
     html += `<div class="column is-12"><h5 class="title is-6">Prices (last ${q.prices.length})</h5>
       <div class="table-container"><table class="table is-fullwidth is-striped is-size-7">
         <thead><tr><th>Date</th><th>Open</th><th>High</th><th>Low</th><th>Close</th><th>Adj Close</th><th>Vol</th><th>Source</th></tr></thead>
-        <tbody>${q.prices.map(p => `<tr><td>${p.trade_date}</td><td>${fmtPrice(p.open)}</td><td>${fmtPrice(p.high)}</td><td>${fmtPrice(p.low)}</td>
+        <tbody>${tablePrices.map(p => `<tr><td>${p.trade_date}</td><td>${fmtPrice(p.open)}</td><td>${fmtPrice(p.high)}</td><td>${fmtPrice(p.low)}</td>
           <td><strong>${fmtPrice(p.close)}</strong></td><td>${fmtPrice(p.adj_close)}</td><td>${fmt(p.volume)}</td><td><span class="tag is-light">${p.source_code}</span></td></tr>`).join("")}</tbody>
       </table></div></div>`;
   } else {
@@ -829,11 +830,7 @@ function calcMACD(prices, params, times) {
 // ---- chart build ----
 
 function buildChart(prices) {
-  // Normalize to ascending once. API returns newest-first, but rebuilds from
-  // _chartPrices are already ascending — don't double-reverse.
-  if (prices.length > 1 && String(prices[0].trade_date) > String(prices[prices.length - 1].trade_date)) {
-    prices = [...prices].reverse();
-  }
+  // API returns ascending; use as-is.
   _chartPrices = prices;
   const el = document.getElementById("price-chart");
   if (!el) return;
