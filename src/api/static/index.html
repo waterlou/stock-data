@@ -5,10 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Stock Data</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bulma@1.0.2/css/bulma.min.css">
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script src="https://unpkg.com/lightweight-charts@5.0.8/dist/lightweight-charts.standalone.production.js"></script>
 <style>
   html { background: #f5f5f5; }
-  .chart-container { position: relative; height: 300px; }
+  .chart-container { position: relative; height: 340px; }
+  .chart-container #price-chart { position: absolute; inset: 0; width: 100%; height: 100%; }
   .card { margin-bottom: 1rem; }
   .stock-row { cursor: pointer; }
   .stock-row:hover { background: #f0f7ff; }
@@ -142,9 +143,27 @@
   <div class="modal-card">
     <header class="modal-card-head">
       <p class="modal-card-title" id="modal-title">Stock Detail</p>
+      <button class="button is-small is-light mr-2" onclick="toggleIndicatorPanel()">⚙ Indicators</button>
       <button class="delete" onclick="closeModal()"></button>
     </header>
     <section class="modal-card-body" id="modal-body"></section>
+  </div>
+</div>
+
+<div class="modal" id="indicator-modal">
+  <div class="modal-background" onclick="closeIndicatorModal()"></div>
+  <div class="modal-card" style="width:480px">
+    <header class="modal-card-head">
+      <p class="modal-card-title">Chart Indicators</p>
+      <button class="delete" onclick="closeIndicatorModal()"></button>
+    </header>
+    <section class="modal-card-body">
+      <div class="field has-addons">
+        <div class="control is-expanded"><div class="select is-fullwidth"><select id="indicator-select"></select></div></div>
+        <div class="control"><button class="button is-info" onclick="addIndicator()">Add</button></div>
+      </div>
+      <div id="indicator-list"><p class="has-text-grey">No indicators selected.</p></div>
+    </section>
   </div>
 </div>
 
@@ -364,7 +383,7 @@ async function openStock(ticker) {
   body.innerHTML = '<p class="has-text-grey">Loading...</p>';
   document.getElementById("stock-modal").classList.add("is-active");
 
-  const q = await apiFetch(`/stocks/${encodeURIComponent(ticker)}/prices?limit=200`);
+  const q = await apiFetch(`/stocks/${encodeURIComponent(ticker)}/prices?limit=500`);
   if (q.status === "queued") {
     body.innerHTML = `<div class="notification is-warning">Data not in DB yet — fetch queued.<br>${q.message}<br>
       <button class="button is-small is-info mt-2" onclick="openStock('${jsStr(ticker)}')">Retry</button></div>`;
@@ -382,7 +401,7 @@ async function openStock(ticker) {
       &nbsp;·&nbsp; EPS ${fu.eps==null?"-":Number(fu.eps).toFixed(2)} &nbsp;·&nbsp; Yield ${fu.dividend_yield==null?"-":(Number(fu.dividend_yield)*100).toFixed(2)+"%"}</p></div></div>`;
   }
   if (q.prices && q.prices.length) {
-    html += `<div class="column is-12"><div class="chart-container"><canvas id="price-chart"></canvas></div></div>`;
+    html += `<div class="column is-12"><div class="chart-container"><div id="price-chart"></div></div></div>`;
     html += `<div class="column is-12"><h5 class="title is-6">Prices (last ${q.prices.length})</h5>
       <div class="table-container"><table class="table is-fullwidth is-striped is-size-7">
         <thead><tr><th>Date</th><th>Open</th><th>High</th><th>Low</th><th>Close</th><th>Adj Close</th><th>Vol</th><th>Source</th></tr></thead>
@@ -399,25 +418,430 @@ async function openStock(ticker) {
   }
   html += "</div>";
   body.innerHTML = html;
-  if (q.prices && q.prices.length) setTimeout(() => drawChart(q.prices), 100);
+  if (q.prices && q.prices.length) setTimeout(() => buildChart(q.prices), 100);
 }
 
-function drawChart(prices) {
-  const canvas = document.getElementById("price-chart");
-  if (!canvas) return;
-  const d = [...prices].reverse();
-  new Chart(canvas.getContext("2d"), {
-    type: "line",
-    data: { labels: d.map(p => p.trade_date), datasets: [
-      { label: "Close", data: d.map(p => Number(p.close)), borderColor: "#2563eb", backgroundColor: "rgba(37,99,235,0.1)", fill: true, tension: 0.1, pointRadius: 1 },
-      { label: "High", data: d.map(p => Number(p.high)), borderColor: "#16a34a", borderDash: [3,3], pointRadius: 0 },
-      { label: "Low", data: d.map(p => Number(p.low)), borderColor: "#dc2626", borderDash: [3,3], pointRadius: 0 },
-    ]},
-    options: { responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { position: "top", labels: { boxWidth: 12, padding: 8 } } },
-      scales: { x: { ticks: { maxTicksLimit: 10, font: { size: 10 } } }, y: { ticks: { font: { size: 10 } } } } },
-  });
+// ============================================================ Chart & Indicators
+
+let _chart = null;
+let _chartPrices = [];
+let _activeIndicators = JSON.parse(localStorage.getItem("sd_indicators") || "[]");
+
+// Indicator definitions. pane: 'main' (overlay on candlestick), 'volume', or 'sub' (own pane).
+const INDICATORS = {
+  MA:     { name: "MA",       pane: "main",   color: "#f59e0b", params: { period: 20 }, calc: calcMA },
+  EMA:    { name: "EMA",      pane: "main",   color: "#3b82f6", params: { period: 20 }, calc: calcEMA },
+  WMA:    { name: "WMA",      pane: "main",   color: "#8b5cf6", params: { period: 20 }, calc: calcWMA },
+  HMA:    { name: "HMA",      pane: "main",   color: "#ec4899", params: { period: 20 }, calc: calcHMA },
+  DEMA:   { name: "DEMA",     pane: "main",   color: "#14b8a6", params: { period: 20 }, calc: calcDEMA },
+  TEMA:   { name: "TEMA",     pane: "main",   color: "#f97316", params: { period: 20 }, calc: calcTEMA },
+  VWMA:   { name: "VWMA",     pane: "main",   color: "#06b6d4", params: { period: 20 }, calc: calcVWMA },
+  BOLL:   { name: "Bollinger", pane: "main",  color: "#a855f7", params: { period: 20, mult: 2 }, calc: calcBOLL },
+  SAR:    { name: "SAR",      pane: "main",   color: "#10b981", params: {}, calc: calcSAR },
+  VWAP:   { name: "VWAP",     pane: "main",   color: "#eab308", params: {}, calc: calcVWAP },
+  BBI:    { name: "BBI",      pane: "main",   color: "#6366f1", params: {}, calc: calcBBI },
+  LSMA:   { name: "LSMA",     pane: "main",   color: "#a21caf", params: { period: 20 }, calc: calcLSMA },
+  TSF:    { name: "TSF",      pane: "main",   color: "#0d9488", params: { period: 20 }, calc: calcTSF },
+  BBIBOLL:{ name: "BBIBOLL",  pane: "main",   color: "#d946ef", params: { period: 20, mult: 2 }, calc: calcBBIBOLL },
+  ENE:    { name: "ENE",      pane: "main",   color: "#4ade80", params: { period: 25, pct: 2.5 }, calc: calcENE },
+  DC:     { name: "Donchian", pane: "main",   color: "#f43f5e", params: { period: 20 }, calc: calcDC },
+  KC:     { name: "Keltner",  pane: "main",   color: "#22d3ee", params: { period: 20, mult: 2 }, calc: calcKC },
+  ALLIGATOR: { name: "Alligator", pane: "main", color: "#94a3b8", params: {}, calc: calcAlligator },
+  GMMA:   { name: "GMMA",     pane: "main",   color: "#64748b", params: {}, calc: calcGMMA },
+  TWAP:   { name: "TWAP",     pane: "main",   color: "#c026d3", params: { period: 20 }, calc: calcTWAP },
+  VOL:    { name: "Volume",   pane: "volume", color: "#60a5fa", params: {}, calc: calcVolume },
+  RSI:    { name: "RSI",      pane: "sub",    color: "#a855f7", params: { period: 14 }, calc: calcRSI },
+  MACD:   { name: "MACD",     pane: "sub",    color: "#3b82f6", params: { fast: 12, slow: 26, signal: 9 }, calc: calcMACD },
+};
+// Indicators listed but not yet implemented (shown disabled in the picker).
+const INDICATORS_SOON = ["CDP", "MIKE", "NINE", "PPSW", "WF", "CKS", "IC", "VMAP"];
+
+function toggleIndicatorPanel() {
+  document.getElementById("indicator-modal").classList.toggle("is-active");
+  renderIndicatorPicker();
+  renderIndicatorList();
 }
+function closeIndicatorModal() { document.getElementById("indicator-modal").classList.remove("is-active"); }
+
+function renderIndicatorPicker() {
+  const sel = document.getElementById("indicator-select");
+  sel.innerHTML = Object.keys(INDICATORS).map(k =>
+    `<option value="${k}">${INDICATORS[k].name} (${INDICATORS[k].pane})</option>`).join("") +
+    INDICATORS_SOON.map(k => `<option value="${k}" disabled>${k} (coming soon)</option>`).join("");
+}
+
+function renderIndicatorList() {
+  const el = document.getElementById("indicator-list");
+  el.innerHTML = _activeIndicators.length
+    ? _activeIndicators.map((ind, i) => {
+        const def = INDICATORS[ind.key];
+        if (!def) return "";
+        const params = Object.entries(def.params).map(([k, v]) => `${k}=${ind.params ? ind.params[k] ?? v : v}`).join(" ");
+        return `<div class="level is-mobile" style="border-bottom:1px solid #eee;padding:4px 0">
+          <div class="level-left"><div><strong>${def.name}</strong> <span class="is-size-7 has-text-grey">${params}</span></div></div>
+          <div class="level-right"><button class="button is-small is-danger is-outlined" onclick="removeIndicator(${i})">Remove</button></div>
+        </div>`;
+      }).join("")
+    : '<p class="has-text-grey">No indicators selected. Volume is enabled by default when added.</p>';
+}
+
+function addIndicator() {
+  const key = document.getElementById("indicator-select").value;
+  const def = INDICATORS[key];
+  if (!def || _activeIndicators.some(i => i.key === key)) return;
+  _activeIndicators.push({ key, params: Object.assign({}, def.params) });
+  persistIndicators();
+  renderIndicatorList();
+  if (_chartPrices.length) buildChart(_chartPrices);
+}
+function removeIndicator(idx) {
+  _activeIndicators.splice(idx, 1);
+  persistIndicators();
+  renderIndicatorList();
+  if (_chartPrices.length) buildChart(_chartPrices);
+}
+function persistIndicators() {
+  localStorage.setItem("sd_indicators", JSON.stringify(_activeIndicators));
+}
+
+// ---- indicator calculations (each returns [{label, kind:'line'|'histogram', color, data:[{time,value}]}]) ----
+
+function _line(label, color, values, times) {
+  const data = [];
+  for (let i = 0; i < values.length; i++)
+    if (values[i] != null) data.push({ time: times[i], value: Number(values[i]) });
+  return { label, kind: "line", color, data };
+}
+function _multiLine(defs, times) {
+  return defs.map(d => _line(d.label, d.color, d.values, times));
+}
+
+function _closes(prices) { return prices.map(p => Number(p.close)); }
+function _highs(prices) { return prices.map(p => Number(p.high)); }
+function _lows(prices) { return prices.map(p => Number(p.low)); }
+function _vols(prices) { return prices.map(p => Number(p.volume || 0)); }
+function _times(prices) { return prices.map(p => p.trade_date); }
+
+function _sma(values, n) {
+  const out = new Array(values.length).fill(null);
+  let sum = 0;
+  for (let i = 0; i < values.length; i++) {
+    sum += values[i];
+    if (i >= n) sum -= values[i - n];
+    if (i >= n - 1) out[i] = sum / n;
+  }
+  return out;
+}
+function _ema(values, n) {
+  const k = 2 / (n + 1);
+  const out = new Array(values.length).fill(null);
+  let prev = null;
+  for (let i = 0; i < values.length; i++) {
+    prev = prev == null ? values[i] : values[i] * k + prev * (1 - k);
+    out[i] = prev;
+  }
+  return out;
+}
+function _wma(values, n) {
+  const out = new Array(values.length).fill(null);
+  for (let i = n - 1; i < values.length; i++) {
+    let ws = 0, w = 0;
+    for (let j = 0; j < n; j++) { ws += values[i - j] * (n - j); w += (n - j); }
+    out[i] = ws / w;
+  }
+  return out;
+}
+function _std(values, n) {
+  const out = new Array(values.length).fill(null);
+  for (let i = n - 1; i < values.length; i++) {
+    let sum = 0;
+    for (let j = 0; j < n; j++) sum += values[i - j];
+    const m = sum / n;
+    let v = 0;
+    for (let j = 0; j < n; j++) v += (values[i - j] - m) ** 2;
+    out[i] = Math.sqrt(v / n);
+  }
+  return out;
+}
+
+function calcMA(prices, params, times) { return [_line("MA", INDICATORS.MA.color, _sma(_closes(prices), params.period), times)]; }
+function calcEMA(prices, params, times) { return [_line("EMA", INDICATORS.EMA.color, _ema(_closes(prices), params.period), times)]; }
+function calcWMA(prices, params, times) { return [_line("WMA", INDICATORS.WMA.color, _wma(_closes(prices), params.period), times)]; }
+function calcHMA(prices, params, times) {
+  const c = _closes(prices), n = params.period, h = Math.round(Math.sqrt(n));
+  const wmaN = _wma(c, n), wmaHalf = _wma(c, Math.max(1, Math.floor(n / 2)));
+  const raw = wmaHalf.map((v, i) => v == null ? null : 2 * v - (wmaN[i] == null ? 0 : wmaN[i]));
+  return [_line("HMA", INDICATORS.HMA.color, _wma(raw, h), times)];
+}
+function calcDEMA(prices, params, times) {
+  const e = _ema(_closes(prices), params.period);
+  const ee = _ema(e, params.period);
+  return [_line("DEMA", INDICATORS.DEMA.color, e.map((v, i) => v == null ? null : 2 * v - (ee[i] == null ? 0 : ee[i])), times)];
+}
+function calcTEMA(prices, params, times) {
+  const c = _closes(prices), n = params.period;
+  const e = _ema(c, n), ee = _ema(e, n), eee = _ema(ee, n);
+  return [_line("TEMA", INDICATORS.TEMA.color, e.map((v, i) => v == null || ee[i] == null || eee[i] == null ? null : 3 * v - 3 * ee[i] + eee[i]), times)];
+}
+function calcVWMA(prices, params, times) {
+  const c = _closes(prices), v = _vols(prices), n = params.period;
+  const out = new Array(c.length).fill(null);
+  for (let i = n - 1; i < c.length; i++) {
+    let cv = 0, vv = 0;
+    for (let j = 0; j < n; j++) { cv += c[i - j] * v[i - j]; vv += v[i - j]; }
+    out[i] = vv ? cv / vv : null;
+  }
+  return [_line("VWMA", INDICATORS.VWMA.color, out, times)];
+}
+function calcBOLL(prices, params, times) {
+  const c = _closes(prices), mid = _sma(c, params.period), sd = _std(c, params.period);
+  return _multiLine([
+    { label: "BOLL-UP", color: "#a855f7", values: mid.map((v, i) => v == null ? null : v + params.mult * sd[i]) },
+    { label: "BOLL-MID", color: "#c084fc", values: mid },
+    { label: "BOLL-LOW", color: "#a855f7", values: mid.map((v, i) => v == null ? null : v - params.mult * sd[i]) },
+  ], times);
+}
+function calcSAR(prices, params, times) {
+  const h = _highs(prices), l = _lows(prices), c = _closes(prices);
+  const out = new Array(c.length).fill(null);
+  let af = 0.02, ep, isLong = c[1] >= c[0], sar = isLong ? l[0] : h[0];
+  ep = isLong ? h[0] : l[0];
+  for (let i = 1; i < c.length; i++) {
+    sar = sar + af * (ep - sar);
+    if (isLong) {
+      if (l[i] < sar) { isLong = false; sar = ep; ep = l[i]; af = 0.02; }
+      else { if (h[i] > ep) { ep = h[i]; af = Math.min(af + 0.02, 0.2); } sar = Math.min(sar, l[i - 1]); if (i >= 2) sar = Math.min(sar, l[i - 2]); }
+    } else {
+      if (h[i] > sar) { isLong = true; sar = ep; ep = h[i]; af = 0.02; }
+      else { if (l[i] < ep) { ep = l[i]; af = Math.min(af + 0.02, 0.2); } sar = Math.max(sar, h[i - 1]); if (i >= 2) sar = Math.max(sar, h[i - 2]); }
+    }
+    out[i] = sar;
+  }
+  return [{ label: "SAR", kind: "line", color: INDICATORS.SAR.color, data: out.map((v, i) => v == null ? null : ({ time: times[i], value: Number(v) })).filter(Boolean) }];
+}
+function calcVWAP(prices, params, times) {
+  const h = _highs(prices), l = _lows(prices), c = _closes(prices), v = _vols(prices);
+  const out = new Array(c.length).fill(null);
+  let pv = 0, vv = 0;
+  for (let i = 0; i < c.length; i++) {
+    const tp = (h[i] + l[i] + c[i]) / 3;
+    pv += tp * v[i]; vv += v[i];
+    out[i] = vv ? pv / vv : null;
+  }
+  return [_line("VWAP", INDICATORS.VWAP.color, out, times)];
+}
+function calcBBI(prices, params, times) {
+  const c = _closes(prices);
+  const ma3 = _sma(c, 3), ma6 = _sma(c, 6), ma12 = _sma(c, 12), ma24 = _sma(c, 24);
+  return [_line("BBI", INDICATORS.BBI.color, c.map((_, i) => [ma3[i], ma6[i], ma12[i], ma24[i]].every(x => x != null) ? (ma3[i] + ma6[i] + ma12[i] + ma24[i]) / 4 : null), times)];
+}
+function calcLSMA(prices, params, times) {
+  const c = _closes(prices), n = params.period;
+  const out = new Array(c.length).fill(null);
+  for (let i = n - 1; i < c.length; i++) {
+    const xs = [], ys = [];
+    for (let j = 0; j < n; j++) { xs.push(j); ys.push(c[i - n + 1 + j]); }
+    const mx = (n - 1) / 2, my = ys.reduce((a, b) => a + b, 0) / n;
+    let num = 0, den = 0;
+    for (let j = 0; j < n; j++) { num += (xs[j] - mx) * (ys[j] - my); den += (xs[j] - mx) ** 2; }
+    const b = den ? num / den : 0, a = my - b * mx;
+    out[i] = a + b * (n - 1);
+  }
+  return [_line("LSMA", INDICATORS.LSMA.color, out, times)];
+}
+function calcTSF(prices, params, times) {
+  // linear regression projected one step ahead
+  const c = _closes(prices), n = params.period;
+  const out = new Array(c.length).fill(null);
+  for (let i = n - 1; i < c.length; i++) {
+    const ys = c.slice(i - n + 1, i + 1);
+    const mx = (n - 1) / 2, my = ys.reduce((a, b) => a + b, 0) / n;
+    let num = 0, den = 0;
+    for (let j = 0; j < n; j++) { num += (j - mx) * (ys[j] - my); den += (j - mx) ** 2; }
+    const b = den ? num / den : 0, a = my - b * mx;
+    out[i] = a + b * n;
+  }
+  return [_line("TSF", INDICATORS.TSF.color, out, times)];
+}
+function calcBBIBOLL(prices, params, times) {
+  const c = _closes(prices), n = params.period;
+  const bbiVals = calcBBI(prices, params, times)[0].data;
+  const arr = new Array(c.length).fill(null);
+  bbiVals.forEach(d => { arr[times.indexOf(d.time)] = d.value; });
+  const sd = _std(arr, n);
+  const mid = _sma(arr, n);
+  return _multiLine([
+    { label: "BBIBOLL-UP", color: "#d946ef", values: mid.map((v, i) => v == null ? null : v + params.mult * sd[i]) },
+    { label: "BBIBOLL-MID", color: "#e879f9", values: mid },
+    { label: "BBIBOLL-LOW", color: "#d946ef", values: mid.map((v, i) => v == null ? null : v - params.mult * sd[i]) },
+  ], times);
+}
+function calcENE(prices, params, times) {
+  const c = _closes(prices), mid = _sma(c, params.period), pct = params.pct / 100;
+  return _multiLine([
+    { label: "ENE-UP", color: "#4ade80", values: mid.map(v => v == null ? null : v * (1 + pct)) },
+    { label: "ENE-MID", color: "#86efac", values: mid },
+    { label: "ENE-LOW", color: "#4ade80", values: mid.map(v => v == null ? null : v * (1 - pct)) },
+  ], times);
+}
+function calcDC(prices, params, times) {
+  const h = _highs(prices), l = _lows(prices), n = params.period;
+  const up = new Array(h.length).fill(null), dn = new Array(l.length).fill(null);
+  for (let i = n - 1; i < h.length; i++) {
+    let hi = -Infinity, lo = Infinity;
+    for (let j = 0; j < n; j++) { hi = Math.max(hi, h[i - j]); lo = Math.min(lo, l[i - j]); }
+    up[i] = hi; dn[i] = lo;
+  }
+  return _multiLine([
+    { label: "DC-UP", color: "#f43f5e", values: up },
+    { label: "DC-LOW", color: "#fb7185", values: dn },
+  ], times);
+}
+function calcKC(prices, params, times) {
+  const c = _closes(prices), h = _highs(prices), l = _lows(prices), n = params.period;
+  const mid = _ema(c, n);
+  const tr = h.map((v, i) => i ? Math.max(v - l[i], Math.abs(v - c[i - 1]), Math.abs(l[i] - c[i - 1])) : v - l[i]);
+  const atr = _ema(tr, n);
+  return _multiLine([
+    { label: "KC-UP", color: "#22d3ee", values: mid.map((v, i) => v == null ? null : v + params.mult * atr[i]) },
+    { label: "KC-MID", color: "#67e8f9", values: mid },
+    { label: "KC-LOW", color: "#22d3ee", values: mid.map((v, i) => v == null ? null : v - params.mult * atr[i]) },
+  ], times);
+}
+function calcAlligator(prices, params, times) {
+  const c = _closes(prices);
+  return _multiLine([
+    { label: "Jaw", color: "#3b82f6", values: _sma(c, 13) },
+    { label: "Teeth", color: "#ef4444", values: _sma(c, 8) },
+    { label: "Lips", color: "#10b981", values: _sma(c, 5) },
+  ], times);
+}
+function calcGMMA(prices, params, times) {
+  const c = _closes(prices);
+  const periods = [3, 5, 8, 10, 12, 15, 30, 35, 40, 45, 50, 60];
+  return _multiLine(periods.map((p, i) => ({
+    label: "GMMA" + p, color: i < 6 ? "#f97316" : "#3b82f6", values: _ema(c, p),
+  })), times);
+}
+function calcTWAP(prices, params, times) {
+  const h = _highs(prices), l = _lows(prices), c = _closes(prices), n = params.period;
+  const out = new Array(c.length).fill(null);
+  for (let i = n - 1; i < c.length; i++) {
+    let s = 0;
+    for (let j = 0; j < n; j++) s += (h[i - j] + l[i - j] + c[i - j]) / 3;
+    out[i] = s / n;
+  }
+  return [_line("TWAP", INDICATORS.TWAP.color, out, times)];
+}
+function calcVolume(prices, params, times) {
+  const c = _closes(prices), v = _vols(prices);
+  const data = v.map((val, i) => ({ time: times[i], value: val, color: c[i] >= (i ? c[i - 1] : c[i]) ? "rgba(231,76,60,0.6)" : "rgba(39,174,96,0.6)" }));
+  return [{ label: "Volume", kind: "histogram", color: "#60a5fa", data }];
+}
+function calcRSI(prices, params, times) {
+  const c = _closes(prices), n = params.period;
+  const out = new Array(c.length).fill(null);
+  let gain = 0, loss = 0;
+  for (let i = 1; i < c.length; i++) {
+    const ch = c[i] - c[i - 1];
+    if (i <= n) { gain += Math.max(ch, 0); loss += Math.max(-ch, 0); }
+    if (i === n) { gain /= n; loss /= n; }
+    if (i > n) { gain = (gain * (n - 1) + Math.max(ch, 0)) / n; loss = (loss * (n - 1) + Math.max(-ch, 0)) / n; }
+    if (i >= n) out[i] = loss ? 100 - 100 / (1 + gain / loss) : 100;
+  }
+  return [_line("RSI", INDICATORS.RSI.color, out, times)];
+}
+function calcMACD(prices, params, times) {
+  const c = _closes(prices);
+  const fast = _ema(c, params.fast), slow = _ema(c, params.slow);
+  const macd = fast.map((v, i) => v == null || slow[i] == null ? null : v - slow[i]);
+  const sig = _ema(macd.map(v => v == null ? 0 : v), params.signal);
+  const hist = macd.map((v, i) => v == null || sig[i] == null ? null : v - sig[i]);
+  const histData = hist.map((v, i) => v == null ? null : ({ time: times[i], value: Number(v), color: v >= 0 ? "rgba(231,76,60,0.5)" : "rgba(39,174,96,0.5)" })).filter(Boolean);
+  return [
+    { label: "MACD", kind: "line", color: "#3b82f6", data: macd.map((v, i) => v == null ? null : ({ time: times[i], value: Number(v) })).filter(Boolean) },
+    { label: "Signal", kind: "line", color: "#f59e0b", data: sig.map((v, i) => v == null ? null : ({ time: times[i], value: Number(v) })).filter(Boolean) },
+    { label: "Hist", kind: "histogram", color: "#94a3b8", data: histData },
+  ];
+}
+
+// ---- chart build ----
+
+function buildChart(prices) {
+  _chartPrices = prices;
+  const el = document.getElementById("price-chart");
+  if (!el) return;
+  if (_chart) { _chart.remove(); _chart = null; }
+
+  const times = _times(prices);
+  const candleData = prices.map(p => ({ time: p.trade_date, open: Number(p.open), high: Number(p.high), low: Number(p.low), close: Number(p.close) }));
+
+  const isDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+  const bg = isDark ? "#1a1a2e" : "#ffffff";
+  const fg = isDark ? "#e0e0e0" : "#333333";
+  const grid = isDark ? "#2a2a3e" : "#eeeeee";
+
+  _chart = LightweightCharts.createChart(el, {
+    layout: { background: { type: "solid", color: bg }, textColor: fg, fontSize: 10 },
+    grid: { vertLines: { color: grid }, horzLines: { color: grid } },
+    timeScale: { timeVisible: true, borderColor: grid },
+    rightPriceScale: { borderColor: grid },
+    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+    autoSize: true,
+  });
+
+  const candleSeries = _chart.addSeries(LightweightCharts.CandlestickSeries, {
+    upColor: "#e74c3c", downColor: "#27ae60",
+    wickUpColor: "#e74c3c", wickDownColor: "#27ae60", borderVisible: false,
+  }, 0);
+  candleSeries.setData(candleData);
+
+  // Determine pane layout: pane 0 main, then volume, then each sub indicator.
+  const enabled = _activeIndicators.map(i => INDICATORS[i.key]).filter(Boolean);
+  const volumeOn = enabled.some(d => d.pane === "volume");
+  const subs = enabled.filter(d => d.pane === "sub");
+
+  let paneCount = 1;
+  let volumePane = -1, subPanes = [];
+  if (volumeOn) { _chart.addPane(1); volumePane = 1; paneCount++; }
+  subs.forEach((_, i) => { _chart.addPane(paneCount + i); subPanes.push(paneCount + i); });
+
+  // overlay indicators on main pane
+  for (const ind of _activeIndicators) {
+    const def = INDICATORS[ind.key];
+    if (!def || def.pane !== "main") continue;
+    let seriesList;
+    try { seriesList = def.calc(prices, ind.params, times); }
+    catch (e) { continue; }
+    for (const s of seriesList) {
+      const series = _chart.addSeries(s.kind === "histogram" ? LightweightCharts.HistogramSeries : LightweightCharts.LineSeries,
+        { color: s.color, lineWidth: 1, priceLineVisible: false, lastValueVisible: false, title: s.label, crosshairMarkerVisible: false }, 0);
+      series.setData(s.data);
+    }
+  }
+
+  if (volumeOn) {
+    const vdef = INDICATORS.VOL;
+    const list = vdef.calc(prices, {}, times);
+    const series = _chart.addSeries(LightweightCharts.HistogramSeries, { priceScaleId: "", priceFormat: { type: "volume" }, priceLineVisible: false, lastValueVisible: false }, volumePane);
+    series.setData(list[0].data);
+  }
+
+  subs.forEach((sub, si) => {
+    const ind = _activeIndicators.find(i => INDICATORS[i.key] === sub);
+    let list;
+    try { list = sub.calc(prices, ind.params, times); }
+    catch (e) { return; }
+    for (const s of list) {
+      const series = _chart.addSeries(s.kind === "histogram" ? LightweightCharts.HistogramSeries : LightweightCharts.LineSeries,
+        { color: s.color, lineWidth: 1, priceLineVisible: false, lastValueVisible: false, title: s.label, priceScaleId: s.kind === "histogram" ? "" : undefined }, subPanes[si]);
+      series.setData(s.data);
+    }
+  });
+
+  _chart.timeScale().fitContent();
+}
+
 function closeModal() { document.getElementById("stock-modal").classList.remove("is-active"); }
 
 // ---------- Watchlist ----------
